@@ -1,0 +1,8 @@
+*.vcd
+*.fsdb
+*.log
+*.jou
+*.spef
+*.gds
+work/
+sim_build/
