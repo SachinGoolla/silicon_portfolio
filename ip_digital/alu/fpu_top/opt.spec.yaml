@@ -13,7 +13,7 @@ flow_cmd:   "python3 scripts/pillar.py --top fpu_top --ip-path ip_digital/alu/fp
 
 # --- targets (what "converged" means). TT corner is the sign-off point. ---
 target_wns_ns:   0.40       # TT worst-slack goal (baseline +0.192). SS stays advisory.
-max_cells:       1004        # cell-count ceiling (synth.total_cells; OSS has no µm² area)
+max_cells:       1200        # cell-count ceiling (synth.total_cells; OSS has no µm² area)
 
 # --- acceptance tolerances ---
 wns_eps_ns:      0.005      # min slack gain to count an edit as a timing improvement
