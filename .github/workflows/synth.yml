@@ -1,0 +1,94 @@
+name: Synth+STA — Silicon Portfolio
+
+# P6 (Synthesis), P7 (LEC), P8 (STA) require the sky130 PDK.
+# Runs nightly and on manual trigger — not on every push (PDK install ~3 min).
+# sky130 is installed via volare (same tool the local symlinks point to).
+
+on:
+  schedule:
+    - cron: "0 2 * * *"   # 02:00 UTC nightly
+  workflow_dispatch:        # manual trigger from GitHub Actions UI
+    inputs:
+      module:
+        description: "Module to verify (leave blank for all)"
+        required: false
+        default: ""
+
+jobs:
+  synth-sta:
+    name: "Pillars 6-8 (${{ matrix.module }})"
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - mod1000
+          - mod3ud
+          - mod5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install OSS CAD Suite
+        uses: YosysHQ/setup-oss-cad-suite@v3
+        with:
+          version: "2024-11-14"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install volare + cocotb
+        run: pip install "volare==0.18.1" "cocotb==2.0.1"
+
+      # Cache the ~800 MB sky130 PDK — keyed on volare version + PDK commit hash.
+      # Cache miss: volare downloads + installs (~3 min). Hit: restored in ~20 s.
+      - name: Cache sky130 PDK
+        id: cache-pdk
+        uses: actions/cache@v4
+        with:
+          path: ~/pdks
+          key: sky130-pdk-0fe599b2afb6708d281543108caf8310912f54af
+
+      # Install sky130 PDK (tt/sf/ff corners + behavioral Verilog for LEC)
+      - name: Install sky130 PDK via volare
+        if: steps.cache-pdk.outputs.cache-hit != 'true'
+        run: |
+          volare enable --pdk sky130 --pdk-root $HOME/pdks 0fe599b2afb6708d281543108caf8310912f54af
+          echo "PDK_ROOT=$HOME/pdks" >> $GITHUB_ENV
+      - name: Set PDK_ROOT from cache
+        if: steps.cache-pdk.outputs.cache-hit == 'true'
+        run: echo "PDK_ROOT=$HOME/pdks" >> $GITHUB_ENV
+
+      # Symlink PDK libs into lib/ so pillar.py _select_lib_files() finds them
+      - name: Link PDK libs into lib/
+        run: |
+          mkdir -p lib
+          SKY=$HOME/pdks/sky130A/libs.ref/sky130_fd_sc_hd
+          ln -sf $SKY/lib/sky130_fd_sc_hd__tt_025C_1v80.lib  lib/
+          ln -sf $SKY/lib/sky130_fd_sc_hd__ss_100C_1v60.lib  lib/
+          ln -sf $SKY/lib/sky130_fd_sc_hd__ff_n40C_1v95.lib  lib/
+          ln -sf $SKY/verilog/sky130_fd_sc_hd.v               lib/
+
+      - name: "[${{ matrix.module }}] Pillar 6 — Synthesis"
+        run: python3 scripts/pillar.py --top ${{ matrix.module }} --step synth --pdk sky130
+
+      - name: "[${{ matrix.module }}] Pillar 7 — LEC"
+        run: python3 scripts/pillar.py --top ${{ matrix.module }} --step lec --pdk sky130
+
+      - name: "[${{ matrix.module }}] Pillar 8 — STA"
+        run: python3 scripts/pillar.py --top ${{ matrix.module }} --step sta --pdk sky130
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: synth-logs-${{ matrix.module }}
+          path: |
+            ip_digital/common_cells/${{ matrix.module }}/logs/
+            ip_digital/common_cells/${{ matrix.module }}/build/sta/
+          retention-days: 14

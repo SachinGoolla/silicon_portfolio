@@ -1,0 +1,385 @@
+================================================================================
+SPEC_TARGET — Parameterized High-Performance Floating-Point Execution Unit
+================================================================================
+Session: ALU | Standard: IEEE 754-2008 | ISA: RISC-V F + D (RVF + RVD)
+Reference implementations: cvfpu (ETH/OpenHW), Berkeley HardFloat, Ariane FPU
+Flow: silicon_portfolio 8-pillar | Author: dada
+
+================================================================================
+1. PARAMETERS
+================================================================================
+
+Parameter     Default  Range          Notes
+-----------   -------  ------------   -----------------------------------------
+FLEN            32     {16, 32, 64}   FP data width (FP16 / FP32 / FP64)
+XLEN            32     {32, 64}       Integer width (for FCVT; must match CPU)
+FTZ              0     {0, 1}         Flush-to-zero (0=IEEE gradual underflow)
+IMPL_DIVSQRT     1     {0, 1}         0=stub SKIP for P6+ if area constrained
+PIPE_FMA         4     {4, 6}         FMA pipeline stages (4=area, 6=perf)
+
+IEEE 754-2008 format table:
+  FLEN=16:  1 sign + 5  exp + 10 mantissa  (bias = 15,    exp range: −14..+15)
+  FLEN=32:  1 sign + 8  exp + 23 mantissa  (bias = 127,   exp range: −126..+127)
+  FLEN=64:  1 sign + 11 exp + 52 mantissa  (bias = 1023,  exp range: −1022..+1023)
+
+================================================================================
+2. TOP-LEVEL INTERFACE — fpu_top.sv
+================================================================================
+
+Inputs:
+  clk                         system clock
+  rst_n                       async active-low reset
+  valid_i                     upstream handshake: operands are valid
+  op_i      [5:0]             FP opcode (see §3 encoding)
+  fmt_i     [1:0]             format: 00=FP32, 01=FP64, 10=FP16, 11=reserved
+  rm_i      [2:0]             rounding mode (from CPU fcsr.rm or per-instruction)
+  src_a_i   [FLEN-1:0]       operand A
+  src_b_i   [FLEN-1:0]       operand B
+  src_c_i   [FLEN-1:0]       operand C (FMA third operand; tie to 0 for FADD/MUL)
+  int_src_i [XLEN-1:0]       integer source (FCVT from int; ignored otherwise)
+  ready_i                     downstream ready to accept result
+
+Outputs:
+  result_o      [FLEN-1:0]   FP result
+  int_result_o  [XLEN-1:0]   integer result (FCVT / FCLASS / FEQ / FLT / FLE)
+  valid_o                     result valid (handshake)
+  ready_o                     FPU ready for new op (= ~busy_o for most ops)
+  busy_o                      multi-cycle operation in flight (FDIV / FSQRT)
+  fflags_o      [4:0]         IEEE 754 exception flags {NV, DZ, OF, UF, NX}
+
+Rounding mode encoding (rm_i[2:0]):
+  3'b000  RNE   Round to Nearest, ties to Even        IEEE 754-2008 default
+  3'b001  RTZ   Round toward Zero (truncation)
+  3'b010  RDN   Round toward −∞   (floor)
+  3'b011  RUP   Round toward +∞   (ceiling)
+  3'b100  RMM   Round to Nearest, ties to Max magnitude
+  3'b111  DYN   Dynamic — pipeline reads from fcsr at decode (not implemented
+                in FPU itself; CPU presents resolved rm before valid_i asserts)
+
+================================================================================
+3. OPCODE ENCODING  op_i[5:0]
+================================================================================
+
+op_i[5:4] = unit select
+  00 = FMA unit      (arithmetic with rounding)
+  01 = Div/Sqrt unit (iterative)
+  10 = Conversion    (FCVT, FMV)
+  11 = Non-compute   (FCLASS, FSGNJ, compare, min/max)
+
+op_i[3:0] = operation within unit
+
+FMA UNIT (unit=00):
+  0000  FADD    A + B          → FMA(A, +1.0, B)   internally
+  0001  FSUB    A − B          → FMA(A, +1.0, −B)
+  0010  FMUL    A × B          → FMA(A, B, +0.0)
+  0011  FMADD   +(A × B) + C
+  0100  FMSUB   +(A × B) − C
+  0101  FNMADD  −(A × B) − C
+  0110  FNMSUB  −(A × B) + C
+
+DIV/SQRT UNIT (unit=01):
+  0000  FDIV    A ÷ B
+  0001  FSQRT   √A             (src_b unused)
+
+CONVERSION UNIT (unit=10):
+  0000  FCVT_W_S    FP32 → INT32  (signed)
+  0001  FCVT_WU_S   FP32 → UINT32
+  0010  FCVT_L_S    FP32 → INT64  (RV64 only)
+  0011  FCVT_LU_S   FP32 → UINT64
+  0100  FCVT_S_W    INT32 → FP32
+  0101  FCVT_S_WU   UINT32 → FP32
+  0110  FCVT_S_D    FP64 → FP32  (narrowing, with rounding)
+  0111  FCVT_D_S    FP32 → FP64  (widening, exact)
+  1000  FCVT_S_H    FP16 → FP32  (widening, exact)
+  1001  FCVT_H_S    FP32 → FP16  (narrowing, with rounding)
+  1010  FMV_X_W     FP32 bits → INT32 (bit-exact, sign-extend to XLEN)
+  1011  FMV_W_X     INT32 bits → FP32 (bit-exact, NaN-box if FLEN=64)
+
+NON-COMPUTE UNIT (unit=11):
+  0000  FCLASS      classify → 10-bit one-hot integer result
+  0001  FSGNJ       result = { src_b.sign,  src_a[FLEN-2:0] }
+  0010  FSGNJN      result = { ~src_b.sign, src_a[FLEN-2:0] }
+  0011  FSGNJX      result = { src_a.sign ^ src_b.sign, src_a[FLEN-2:0] }
+  0100  FEQ         A == B → int {0,1}; NV if sNaN
+  0101  FLT         A < B  → int {0,1}; NV if NaN
+  0110  FLE         A <= B → int {0,1}; NV if NaN
+  0111  FMIN        min(A,B) per IEEE minNum; NaN quirks apply
+  1000  FMAX        max(A,B) per IEEE maxNum; NaN quirks apply
+
+================================================================================
+4. FMA MICRO-ARCHITECTURE — fpu_fma.sv
+================================================================================
+
+Mantissa field widths by FLEN:
+  FLEN=32: MLEN=24 (23 stored + 1 hidden bit)
+  FLEN=64: MLEN=53 (52 stored + 1 hidden bit)
+  FLEN=16: MLEN=11 (10 stored + 1 hidden bit)
+
+Intermediate product width: 2×MLEN + 2  (before alignment)
+With C alignment buffer:   2×MLEN + 2 + 3  (guard, round, sticky)
+
+Pipeline (PIPE_FMA=4):
+
+  ┌─ S0: Classify + Pre-process ──────────────────────────────────────────┐
+  │  Unpack sign/exp/mant from each source                                │
+  │  NaN-box check (FLEN=64 + FP32 op): bad box → treat as canonical NaN │
+  │  Classify: {is_nan, is_inf, is_zero, is_sub, is_snan}                │
+  │  Restore hidden bit for normals; set to 0 for subnormals              │
+  │  Apply FNMADD/FMSUB negate by flipping product sign and C sign        │
+  │  Compute product exponent: exp_prod = exp_a + exp_b − BIAS            │
+  │  Compare exp_prod vs exp_c → alignment shift amount (≤ 2×MLEN+3)    │
+  │  Special-case shortcut register: {out_is_nan, out_is_inf, out_is_zero}│
+  └───────────────────────────────────────────────────────────────────────┘
+                                │
+  ┌─ S1: Mantissa Multiply ────────────────────────────────────────────────┐
+  │  MLEN×MLEN unsigned mantissa multiply                                  │
+  │  FLEN=32: 24×24 → 48-bit  via Booth Radix-4 (13 partial products)    │
+  │  FLEN=64: 53×53 → 106-bit via Booth Radix-4 (27 partial products)    │
+  │  Dadda tree compression: reduce to carry-save {sum_pp, carry_pp}      │
+  │  (Dadda chosen over Wallace for better fanout at FP64)                │
+  │  Product CSA pair propagated to S2 (no final add yet — save area)     │
+  └───────────────────────────────────────────────────────────────────────┘
+                                │
+  ┌─ S2: Align + 3:2 Compress ─────────────────────────────────────────────┐
+  │  Shift C mantissa right by alignment amount; accumulate sticky bit     │
+  │  If effective subtraction: complement C mantissa before add            │
+  │  3-input CSA: {sum_pp, carry_pp, C_shifted} → {sum2, carry2}         │
+  │  Compute result sign (depends on magnitudes; may need final sign fix)  │
+  └───────────────────────────────────────────────────────────────────────┘
+                                │
+  ┌─ S3: Final Add + Normalize + Round + Pack ─────────────────────────────┐
+  │  Final CLA adder: sum2 + carry2 → result_unnorm                       │
+  │  Leading-zero detection (LZD) on result_unnorm (width = 2×MLEN+4)    │
+  │  Left-shift to normalize; adjust exponent                              │
+  │  Extract {guard, round, sticky} bits                                  │
+  │  Apply rounding mode (rm_i) with full 5-mode support                 │
+  │  Post-rounding overflow: re-normalize if rounding pushed to next exp  │
+  │  Underflow: check against MIN_NORMAL after rounding; set UF if inexact│
+  │  Overflow: saturate to ±∞ or MAX_NORMAL per rm                       │
+  │  Mux in shortcut results (NaN/inf/zero from S0)                      │
+  │  Generate fflags: {NV_s0, OF, UF, NX}                                │
+  │  Pack: result = {sign, exp[EW-1:0], mant[MLEN-2:0]}                 │
+  └───────────────────────────────────────────────────────────────────────┘
+
+PIPE_FMA=6 option: split S2 into S2a (CSA) + S2b (sign resolution)
+                   split S3 into S3a (add+LZD) + S3b (round+pack)
+                   Increases clock frequency at cost of 2 extra latency cycles.
+
+================================================================================
+5. DIVIDER / SQRT MICRO-ARCHITECTURE — fpu_divsqrt.sv
+================================================================================
+
+Algorithm: SRT Radix-4 digit-recurrence
+Reference: Ercegovac & Lang "Digital Arithmetic", Chapter 6
+           Metzgen & Bruguera "SRT Radix-4 for FP Divide and Square Root"
+
+FDIV: quotient digits ∈ {−2, −1, 0, +1, +2} → 2 mantissa bits per cycle
+  Startup: normalize operands, compute initial partial remainder
+  Iteration: partial remainder update + digit selection table (PD ROM)
+  Completion: on-the-fly conversion to signed-digit → binary quotient
+  Rounding: quotient rounded to FLEN precision with remainder-based sticky bit
+
+FSQRT: same SRT-4 engine; different initialization seed
+  Initial estimate: compute sqrt_seed from exp (shift right 1 bit is first approx)
+  Unified with FDIV datapath via mux at partial remainder initialization
+
+Latency:
+  Format   FDIV     FSQRT
+  ------   ------   ------
+  FP16     8 cyc    10 cyc
+  FP32     14 cyc   16 cyc
+  FP64     29 cyc   30 cyc
+
+Special cases (handled before SRT iteration, 1 cycle):
+  FDIV:  A/0 → ±∞, DZ=1     | 0/0 → qNaN, NV=1  | ∞/∞ → qNaN, NV=1
+  FSQRT: √(−x) → qNaN, NV=1  | √(−0) → −0        | √∞ → +∞
+
+================================================================================
+6. CONVERSION UNIT MICRO-ARCHITECTURE — fpu_cvt.sv
+================================================================================
+
+INT→FP (FCVT.S.W / FCVT.D.W etc.)
+  CLZ on integer magnitude → shift amount for normalization
+  Left-shift mantissa to remove leading zeros; adjust exponent
+  Round mantissa to MLEN bits (integer may have more significant bits than MLEN)
+  2-cycle latency (CLZ + pack)
+  Reuses LZD tree from FMA S3 (shared module fpu_lzd.sv)
+
+FP→INT (FCVT.W.S / FCVT.L.D etc.)
+  Unpack; check for NaN/inf/out-of-range → clamp to INT_MAX/INT_MIN, NV=1
+  Right-shift mantissa by (MLEN − 1 − exp + BIAS) positions
+  Apply rounding per rm
+  2-cycle latency
+
+FP widening (FCVT.D.S / FCVT.S.H):
+  Re-encode exponent to new bias; zero-extend mantissa. Exact. 1 cycle.
+
+FP narrowing (FCVT.S.D / FCVT.H.S):
+  Check exponent range; right-shift excess mantissa bits; round; handle subnormal
+  Possible OF/UF/NX. 2-cycle latency.
+
+FMV: pure register, 1 cycle. No arithmetic.
+
+================================================================================
+7. NON-COMPUTE UNIT — fpu_noncomp.sv
+================================================================================
+
+All operations: 1 pipeline stage (registered output)
+
+FCLASS output bit mapping (10-bit one-hot to int_result_o):
+  [9]=qNaN [8]=sNaN [7]=-inf [6]=-normal [5]=-subnormal
+  [4]=-zero [3]=+zero [2]=+subnormal [1]=+normal [0]=+inf
+
+NaN comparison rule for FEQ:
+  sNaN input → NV=1, result=0 (unordered)
+  qNaN input → NV=0, result=0 (quietly unordered) ← catches FEQ(NaN,NaN)=0
+  −0 == +0 → result=1 ← critical IEEE rule
+
+FMIN/FMAX NaN behavior (RISC-V ISA §11.3, IEEE 754-2019 minNum):
+  One input is qNaN → return the OTHER input (non-NaN wins)
+  Both are NaN → return canonical NaN
+  −0 and +0: FMIN returns −0; FMAX returns +0
+
+================================================================================
+8. POWER FEATURES — fpu_clk_gate_ctrl.sv + fpu_operand_iso.sv
+================================================================================
+
+Clock Gating:
+  ICG (Integrated Clock Gate): latch-based, glitch-free
+  fma_clk_en   = valid_i & (op_i[5:4] == 2'b00)
+  div_clk_en   = valid_i & (op_i[5:4] == 2'b01) | busy_div
+  cvt_clk_en   = valid_i & (op_i[5:4] == 2'b10)
+  ncomp_clk_en = valid_i & (op_i[5:4] == 2'b11)
+
+  Savings estimate: FMA Dadda tree is 40% of dynamic power; gating when idle
+  saves ~35% average at typical workload (mixed ops).
+
+Operand Isolation:
+  When !fma_clk_en: mantissa inputs to Booth encoder zeroed
+  When !div_clk_en: partial remainder register inputs zeroed
+  Prevents switching in multi-thousand-gate mantissa trees.
+
+================================================================================
+9. VERIFICATION TARGETS (8-PILLAR)
+================================================================================
+
+Pillar   Tool              Gate Condition
+-------  ----------------  -----------------------------------------------------
+P1 Lint  Verilator         0 errors; 0 warnings lint-clean across all fpu_*.sv
+P2 Form  SymbiYosys/z3     PASS (depth 20) for fpu_noncomp + handshake protocol
+                           Assertions:
+                             FCLASS one-hot output always exactly 1 bit set
+                             FSGNJ/N/X bit-transparent on mantissa+exponent
+                             FEQ(−0, +0) = 1
+                             busy_o: only high for FDIV/FSQRT opcodes
+                             valid_o never without prior valid_i after reset
+                             ready_o = ~busy_o for non-iterative ops
+                           Cover points:
+                             NV flag set (sNaN inputs), DZ flag set (div by 0)
+P3 Func  cocotb 2.0.1      100% pass; golden model = Python softfloat
+                           (struct.pack for FP32/FP64, ctypes for FP16)
+                           Test vectors:
+                             All 7 FMA opcodes × all 5 rounding modes
+                             Operand class matrix: {normal, sub, ±0, ±∞, qNaN,
+                               sNaN} × {normal, sub, ±0, ±∞, qNaN, sNaN}
+                             FP32 exhaustive for small mantissa values
+                             Boundary exponents: MAX_EXP, MIN_NORMAL, 0
+                             FDIV/FSQRT: latency protocol test (busy/valid cycle)
+                             FCVT: round-trip (INT→FP→INT) for all rm modes
+                             fflags bit-exact match to softfloat on every vector
+P4 Sim   Verilator binary  No $error / $fatal; VCD for pipeline wave inspection
+                           Self-checking: golden model in DPI-C or cocotb driver
+P5 Cov   verilator_cov     Advisory target: >85% line/branch
+                           Note: NaN/subnormal paths are rare; manual cover needed
+P6 Syn   Yosys             Synthesis completes; cells > 0; no unresolved modules
+                           Report: critical path statement in synthesis log
+P7 LEC   Yosys equiv       PASS for fpu_noncomp; WARN for fpu_fma (expected —
+                           complex datapath; Yosys equiv limited for multipliers)
+P8 STA   OpenSTA           Target: 100 MHz on sky130 (10 ns period), slack MET
+                           Measure: actual FMA critical path (expected 8–12 ns)
+                           If critical path > 10 ns → document in report as
+                           "meets 80 MHz; 100 MHz requires pipeline register"
+
+================================================================================
+10. PPA TARGETS
+================================================================================
+
+                     Sky130 @ 100 MHz           Nangate45 @ 400 MHz
+Metric               (baseline, OSS tools)      (stretch, no PD libs needed)
+-----------------    -----------------------    ----------------------------
+Timing               slack >= 0 ns              slack >= 0 ns
+FMA latency          4 cycles                   4 cycles (or 6 @ 800 MHz)
+FDIV latency FP32    14 cycles                  14 cycles
+Total cell count     < 5000 std cells (FP32)    < 3000 std cells
+FMA share of area    ~50% of total              ~45%
+Div/Sqrt share       ~25% of total              ~20%
+Dynamic power        advisory (no PDK LPE)      advisory
+
+================================================================================
+11. FILE MANIFEST
+================================================================================
+
+ip_digital/alu/
+├── architecture/
+│   ├── Microarchitecture.txt       reference design document
+│   └── SPEC_target.txt             this file
+├── rtl/
+│   ├── fpu_top.sv                  top-level: decode, arbitration, handshake
+│   ├── fpu_fma.sv                  FMA 4-stage pipeline (FADD/FSUB/FMUL/FMADD)
+│   ├── fpu_divsqrt.sv              SRT-4 iterative FDIV + FSQRT
+│   ├── fpu_cvt.sv                  all FCVT conversions + FMV
+│   ├── fpu_noncomp.sv              FCLASS, FSGNJ, compare, FMIN/FMAX
+│   ├── fpu_classify.sv             operand classifier + NaN-box checker
+│   ├── fpu_lzd.sv                  leading-zero detector (shared FMA+CVT)
+│   ├── fpu_round.sv                rounding logic (shared across units)
+│   ├── fpu_result_mux.sv           one-hot result arbitration
+│   ├── fpu_flags.sv                exception flag merge + registration
+│   ├── fpu_clk_gate_ctrl.sv        ICG enable generation
+│   └── fpu_operand_iso.sv          operand zeroing for idle units
+└── verification/
+    ├── tb_fpu_top.sv               Verilator/Icarus toplevel wrapper
+    ├── test_fpu_top.py             cocotb master test (all ops + all rm modes)
+    ├── fpu_top.sby                 SymbiYosys (noncomp + protocol assertions)
+    └── fpu_top.sdc                 SDC: 100 MHz sky130 target
+
+================================================================================
+12. SESSION EXECUTION PLAN
+================================================================================
+
+PHASE 1 — Single-cycle units + classify + top shell   [TARGET: TODAY]
+  fpu_classify.sv, fpu_noncomp.sv, fpu_lzd.sv
+  fpu_top.sv (skeleton: decode, handshake, noncomp wired in)
+  tb_fpu_top.sv + test_fpu_top.py (noncomp tests)
+  fpu_top.sby (formal: noncomp + protocol)
+  → Pillars 1, 2, 3 GREEN for all non-compute ops
+
+PHASE 2 — FMA Unit                                     [TARGET: TODAY / NEXT]
+  fpu_round.sv (rounding logic, shared)
+  fpu_fma.sv (4-stage pipeline: S0 classify through S3 normalize+round)
+  Extend test_fpu_top.py with softfloat golden model
+  → Pillar 3 GREEN for FADD/FSUB/FMUL/FMADD; Pillar 2 cover reachable
+
+PHASE 3 — Synthesis + STA                              [TARGET: TODAY]
+  fpu_result_mux.sv, fpu_flags.sv, fpu_clk_gate_ctrl.sv, fpu_operand_iso.sv
+  fpu_top.sdc
+  → Pillars 6, 7, 8 (P7 WARN expected on FMA)
+
+PHASE 4 — Divider / Sqrt + Conversion                  [NEXT SESSION]
+  fpu_divsqrt.sv (SRT-4 engine — week of iteration expected)
+  fpu_cvt.sv (FCVT + FMV)
+  → Pillars 3, 4, 8 on full opcode set
+
+HONEST SESSION ESTIMATE:
+  Phase 1: Achievable today           (4–5 hours of implementation)
+  Phase 2: FMA S0–S2 today;           (S3 rounding is the hard part — 2–3 hours)
+           S3 may spill to next session
+  Phase 3: Achievable if P2 done      (1–2 hours, mostly Yosys)
+  Phase 4: Separate session           (div/sqrt alone is 1 full session)
+
+  Realistic end-of-session state:
+    P1 PASS, P2 PASS, P3 PASS → all non-compute ops
+    P3 PASS → FADD/FSUB/FMUL (behavioral FMA without S3 rounding subtleties)
+    P6 advisory, P8 advisory
+    fpu_divsqrt.sv: stub returning SKIP
+
+================================================================================

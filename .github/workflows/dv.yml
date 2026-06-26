@@ -1,0 +1,77 @@
+name: DV — Silicon Portfolio
+
+# Gate every push and PR.
+# P1-P5: run on every commit (no PDK needed — Verilator only).
+# P6-P8: see synth.yml (requires sky130 PDK via volare, nightly + manual).
+
+on:
+  push:
+    branches: ["main", "dev", "feature/**"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  pillar:
+    name: "Pillars 1-5 (${{ matrix.module }})"
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - mod1000
+          - mod3ud
+          - mod5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install OSS CAD Suite
+        uses: YosysHQ/setup-oss-cad-suite@v3
+        with:
+          version: "2024-11-14"
+
+      - name: Set up Python + cocotb
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install cocotb
+        run: pip install "cocotb==2.0.1"
+
+      - name: "[${{ matrix.module }}] Pillar 1 — Lint"
+        run: python3 scripts/pillar.py --top ${{ matrix.module }} --step lint
+
+      - name: "[${{ matrix.module }}] Pillar 2 — Formal"
+        run: python3 scripts/pillar.py --top ${{ matrix.module }} --step formal
+
+      - name: "[${{ matrix.module }}] Pillar 3 — Functional"
+        run: python3 scripts/pillar.py --top ${{ matrix.module }} --step functional
+
+      # P4: Verilator binary sim — needs no PDK
+      - name: "[${{ matrix.module }}] Pillar 4 — Simulation"
+        run: python3 scripts/pillar.py --top ${{ matrix.module }} --step sim
+
+      # P5: Coverage — 95% line and 90% toggle enforced
+      - name: "[${{ matrix.module }}] Pillar 5 — Coverage"
+        run: |
+          python3 scripts/pillar.py --top ${{ matrix.module }} --step coverage \
+            --coverage-threshold 95 --coverage-toggle-threshold 90
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dv-logs-${{ matrix.module }}
+          path: ip_digital/common_cells/${{ matrix.module }}/logs/
+          retention-days: 7
+
+      - name: Upload waveforms on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dv-waves-${{ matrix.module }}
+          path: ip_digital/common_cells/${{ matrix.module }}/build/sim/
+          retention-days: 7

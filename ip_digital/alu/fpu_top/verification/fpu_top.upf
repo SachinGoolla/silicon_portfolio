@@ -1,0 +1,27 @@
+# =============================================================================
+# fpu_top.upf  —  Unified Power Format (IEEE 1801)
+# Power intent for the 32-bit floating-point unit (FPU)
+# =============================================================================
+#
+# Single power domain: the entire FPU operates from VDD/VSS.
+# Clock-gating is implemented in RTL (fpu_clk_gate_ctrl.sv) per sub-unit.
+# Future extensions: add per-unit retention or shutoff domains here.
+# =============================================================================
+
+# Top-level power domain spanning the entire FPU hierarchy
+create_power_domain PD_TOP -include_scope
+
+# Supply ports (connect to board-level VDD/VSS)
+create_supply_port VDD -direction in
+create_supply_port VSS -direction in
+
+# Supply nets
+create_supply_net VDD -domain PD_TOP
+create_supply_net VSS -domain PD_TOP
+
+# Connect nets to ports
+connect_supply_net VDD -ports VDD
+connect_supply_net VSS -ports VSS
+
+# Assign nets to domain
+set_domain_supply_net PD_TOP -primary_power_net VDD -primary_ground_net VSS

@@ -1,0 +1,21 @@
+# UPF 2.1 — Power intent for mod3ud (single power domain, reference implementation)
+# mod3ud is a simple counter — one always-on domain, no power switches required.
+# This UPF demonstrates the minimal structure for pillar flow integration.
+
+# Primary (and only) power domain — encompasses entire design
+create_power_domain PD_TOP -include_scope
+
+# Supply network
+create_supply_net  VDD -domain PD_TOP
+create_supply_net  VSS -domain PD_TOP
+
+# Connect design ports to supply nets
+connect_supply_net VDD -ports { VDD }
+connect_supply_net VSS -ports { VSS }
+
+# Supply set for the domain
+create_supply_set  SS_TOP \
+    -function {power VDD} \
+    -function {ground VSS}
+
+associate_supply_set SS_TOP -handle PD_TOP.primary

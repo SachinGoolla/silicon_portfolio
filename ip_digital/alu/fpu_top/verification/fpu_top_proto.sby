@@ -1,0 +1,34 @@
+[options]
+# fpu_top protocol invariants: ready_o = ~busy_o
+# BMC depth=5 covers FMA pipeline (4 stages) + CVT (2 stages).
+# mode prove (k-induction) OOMs z3 on 767-FF design at any tractable depth.
+mode bmc
+depth 5
+
+[engines]
+smtbmc --stbv z3
+
+[script]
+read -formal fpu_round.sv
+read -formal fpu_flags.sv
+read -formal fpu_clk_gate_ctrl.sv
+read -formal fpu_noncomp.sv
+read -formal fpu_fma.sv
+read -formal fpu_cvt.sv
+read -formal fpu_divsqrt.sv
+read -formal fpu_result_mux.sv
+read -formal fpu_operand_iso.sv
+read -formal fpu_top.sv
+prep -top fpu_top
+
+[files]
+../rtl/fpu_round.sv
+../rtl/fpu_flags.sv
+../rtl/fpu_clk_gate_ctrl.sv
+../rtl/fpu_noncomp.sv
+../rtl/fpu_fma.sv
+../rtl/fpu_cvt.sv
+../rtl/fpu_divsqrt.sv
+../rtl/fpu_result_mux.sv
+../rtl/fpu_operand_iso.sv
+../rtl/fpu_top.sv

@@ -1,0 +1,261 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<title>Silicon Portfolio — Setup &amp; Quickstart</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0d1117;color:#e6edf3;font:14px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:32px 48px;max-width:900px}
+h1{font-size:24px;margin-bottom:4px;color:#e6edf3}
+h2{font-size:15px;color:#79c0ff;margin:32px 0 10px;border-bottom:1px solid #30363d;padding-bottom:5px;text-transform:uppercase;letter-spacing:.5px}
+h3{font-size:13px;color:#8b949e;text-transform:uppercase;letter-spacing:.6px;margin:18px 0 6px}
+p{color:#8b949e;margin-bottom:8px;line-height:1.6}
+a{color:#58a6ff;text-decoration:none}a:hover{text-decoration:underline}
+code{font-family:'Cascadia Code','SF Mono',Consolas,monospace;font-size:12px;background:#161b22;padding:1px 5px;border-radius:3px;border:1px solid #30363d}
+pre{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:13px 15px;position:relative;margin:6px 0 14px;overflow-x:auto;font-size:12.5px;font-family:'Cascadia Code','SF Mono',Consolas,monospace;line-height:1.5}
+pre code{background:none;border:none;padding:0;font-size:inherit}
+.cp{position:absolute;top:8px;right:8px;background:#21262d;border:1px solid #30363d;border-radius:4px;color:#8b949e;cursor:pointer;font-size:11px;padding:2px 8px;transition:color .15s}
+.cp:hover{color:#e6edf3}.cp.ok{color:#3fb950;border-color:#3fb950}
+table{width:100%;border-collapse:collapse;margin:8px 0 18px;font-size:13px}
+th{background:#161b22;padding:8px 10px;text-align:left;border:1px solid #30363d;color:#e6edf3;font-weight:600}
+td{padding:7px 10px;border:1px solid #30363d;color:#8b949e;vertical-align:top}
+td:first-child{color:#e6edf3;white-space:nowrap;font-weight:500}
+tr:hover td{background:#161b22}
+.ok{color:#3fb950}.warn{color:#d29922}.bad{color:#f85149}.dim{color:#8b949e}
+.pill{display:inline-block;border-radius:10px;padding:1px 8px;font-size:11px;font-weight:600}
+.g{background:#0d2a1a;color:#3fb950;border:1px solid #2a6a2a}
+.y{background:#3a2e00;color:#d29922;border:1px solid #6a5a00}
+.b{background:#0d2040;color:#58a6ff;border:1px solid #1a4080}
+.r{background:#2a0d0d;color:#f85149;border:1px solid #6a1a1a}
+details{border:1px solid #30363d;border-radius:6px;margin:6px 0;overflow:hidden}
+summary{padding:10px 14px;cursor:pointer;background:#161b22;font-weight:500;list-style:none;display:flex;justify-content:space-between;align-items:center;user-select:none}
+summary::after{content:'▸';color:#8b949e;font-size:12px}details[open] summary::after{content:'▾'}
+summary:hover{background:#1c2128}
+.faq{padding:14px;border-top:1px solid #30363d}
+.step{display:flex;gap:14px;margin:10px 0}
+.step-num{background:#1a4080;color:#58a6ff;border-radius:50%;width:26px;height:26px;min-width:26px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;margin-top:1px}
+.step-body{flex:1}
+.step-body p{margin-bottom:4px}
+.badge{display:inline-flex;align-items:center;gap:5px;background:#161b22;border:1px solid #30363d;border-radius:5px;padding:3px 9px;font-size:12px;margin:2px 3px 2px 0;vertical-align:middle}
+.badge svg{width:14px;height:14px;flex-shrink:0}
+.note{background:#131d2e;border:1px solid #1a4080;border-radius:6px;padding:10px 14px;margin:8px 0 14px;font-size:13px;color:#8b949e}
+.note strong{color:#58a6ff}
+.warn-box{background:#1e1a00;border:1px solid #6a5a00;border-radius:6px;padding:10px 14px;margin:8px 0 14px;font-size:13px;color:#8b949e}
+.warn-box strong{color:#d29922}
+.success-box{background:#0d2a1a;border:1px solid #2a6a2a;border-radius:6px;padding:10px 14px;margin:8px 0 14px;font-size:13px;color:#8b949e}
+.success-box strong{color:#3fb950}
+</style></head><body>
+
+<h1>⚡ Silicon Portfolio</h1>
+<p>8-pillar automated RTL verification — lint to GLS. All tools run on <strong>dada-ser</strong>; you edit and view results from Windows via VSCode Remote-SSH over Tailscale.</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<h2>🖥️ Setup — Windows + VSCode → dada-ser via Tailscale</h2>
+
+<div class="note"><strong>Architecture:</strong> Your Windows laptop is just an editor. All EDA tools (Verilator, Yosys, OpenSTA, Icarus, SymbiYosys) live on <strong>dada-ser</strong>. VSCode Remote-SSH tunnels over Tailscale so you get a native IDE feel with zero local installs.</div>
+
+<h3>Step 1 — Install Tailscale on Windows</h3>
+<div class="step">
+  <div class="step-num">1</div>
+  <div class="step-body">
+    <p>Download and install Tailscale from <a href="https://tailscale.com/download/windows">tailscale.com/download/windows</a></p>
+    <p>Sign in with the same account used on dada-ser (<strong>SachinGoolla@</strong>).</p>
+    <p>After login, open a PowerShell and verify dada-ser is visible:</p>
+    <pre><code>tailscale status</code><button class="cp" onclick="cp(this)">copy</button></pre>
+    <p class="dim">You should see <code>100.125.23.67  dada-ser</code> in the list.</p>
+  </div>
+</div>
+
+<h3>Step 2 — Install VSCode + Remote-SSH extension</h3>
+<div class="step">
+  <div class="step-num">2</div>
+  <div class="step-body">
+    <p>Install <a href="https://code.visualstudio.com/">VSCode</a>, then open the Extensions panel (<kbd>Ctrl+Shift+X</kbd>) and install:</p>
+    <p>
+      <span class="badge">Remote - SSH <em>(ms-vscode-remote.remote-ssh)</em></span>
+      <span class="badge">Remote - SSH: Editing Configuration Files</span>
+    </p>
+    <p>Optional but recommended:</p>
+    <p>
+      <span class="badge">SystemVerilog - Language Support</span>
+      <span class="badge">Python</span>
+    </p>
+  </div>
+</div>
+
+<h3>Step 3 — Add dada-ser to SSH config</h3>
+<div class="step">
+  <div class="step-num">3</div>
+  <div class="step-body">
+    <p>Open a PowerShell and create/edit <code>%USERPROFILE%\.ssh\config</code>:</p>
+    <pre><code>Host dada-ser
+    HostName 100.125.23.67
+    User dada
+    ForwardAgent yes</code><button class="cp" onclick="cp(this)">copy</button></pre>
+    <p class="dim">Using the Tailscale IP directly is most reliable. The hostname <code>dada-ser</code> also works if MagicDNS is enabled in your Tailscale admin.</p>
+    <p class="dim">If you use an SSH key, add: <code>IdentityFile ~/.ssh/id_ed25519</code></p>
+  </div>
+</div>
+
+<h3>Step 4 — Connect VSCode to dada-ser</h3>
+<div class="step">
+  <div class="step-num">4</div>
+  <div class="step-body">
+    <p>Press <kbd>F1</kbd> → type <strong>Remote-SSH: Connect to Host</strong> → select <strong>dada-ser</strong>.</p>
+    <p>A new VSCode window opens connected to the server. In the integrated terminal:</p>
+    <pre><code>cd /home/dada/silicon_portfolio
+ls</code><button class="cp" onclick="cp(this)">copy</button></pre>
+    <p>Then open the folder: <kbd>File → Open Folder</kbd> → <code>/home/dada/silicon_portfolio</code></p>
+  </div>
+</div>
+
+<h3>Step 5 — One-time environment setup (run once on dada-ser)</h3>
+<div class="step">
+  <div class="step-num">5</div>
+  <div class="step-body">
+    <p>In the VSCode terminal (which is already SSH'd into dada-ser):</p>
+    <pre><code>bash /home/dada/silicon_portfolio/scripts/setup_env.sh</code><button class="cp" onclick="cp(this)">copy</button></pre>
+    <p>This sets up the Python venv with cocotb, adds <code>pillar</code> to PATH, and writes a welcome banner. Re-open the terminal after it completes.</p>
+  </div>
+</div>
+
+<div class="success-box"><strong>✓ You're in.</strong> The VSCode terminal is now a full EDA shell. All <code>pillar</code> commands run directly — no extra steps.</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<h2>🚀 Run Your First Verification</h2>
+
+<pre><code>pillar --top mod1000            # all 8 pillars, ~2 min
+pillar --top mod1000 --step lint   # just P1 lint+CDC
+pillar --top mod1000 --step sta    # just P8 STA+GLS</code><button class="cp" onclick="cp(this)">copy</button></pre>
+
+<p>Soft-fail: all pillars run even if one fails. Full summary printed at the end.</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<h2>🔀 8-Pillar Flow</h2>
+
+<p style="font-family:'Cascadia Code','SF Mono',Consolas,monospace;font-size:13px;color:#58a6ff;margin-bottom:10px">
+🔍 P1 → 🔬 P2 → ✅ P3 → 🎬 P4 → 📈 P5 → 🏗️ P6 → ⚖️ P7 → ⏱️ P8
+</p>
+<table>
+<tr><th>#</th><th>Pillar</th><th>Tool</th><th>Pass Gate</th><th>Where</th></tr>
+<tr><td>P1</td><td>Lint + CDC/RDC</td><td>Verilator + static scan</td><td>0 errors; CDC advisory</td><td><span class="pill g">CI + local</span></td></tr>
+<tr><td>P2</td><td>Formal</td><td>SymbiYosys / z3</td><td>PASS + cover reachable</td><td><span class="pill g">CI + local</span></td></tr>
+<tr><td>P3</td><td>Functional</td><td>cocotb 2.0.1 / Icarus</td><td>100% tests pass</td><td><span class="pill g">CI + local</span></td></tr>
+<tr><td>P4</td><td>RTL Simulation</td><td>Verilator binary + VCD</td><td>No $error / $fatal</td><td><span class="pill b">local</span></td></tr>
+<tr><td>P5</td><td>Coverage</td><td>verilator_coverage</td><td>Advisory (or --coverage-threshold N)</td><td><span class="pill b">local</span></td></tr>
+<tr><td>P6</td><td>Synthesis</td><td>Yosys → gate netlist</td><td>Synth OK, cells &gt; 0</td><td><span class="pill b">local</span></td></tr>
+<tr><td>P7</td><td>LEC</td><td>Yosys equiv_make/induct</td><td>PASS; WARN = inconclusive</td><td><span class="pill b">local</span></td></tr>
+<tr><td>P8</td><td>STA + GLS</td><td>OpenSTA × 3 corners + Icarus GLS</td><td>Slack MET all corners; GLS PASS</td><td><span class="pill b">local</span></td></tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<h2>⌨️ Commands</h2>
+<table>
+<tr><th>Command</th><th>What it does</th></tr>
+<tr><td><code>pillar --top &lt;mod&gt;</code></td><td>All 8 pillars</td></tr>
+<tr><td><code>--step lint|formal|functional|sim|coverage|synth|lec|sta</code></td><td>Single pillar</td></tr>
+<tr><td><code>--step history</code></td><td>Regression trend (all past runs)</td></tr>
+<tr><td><code>--step clean</code></td><td>Wipe build/ and logs/</td></tr>
+<tr><td><code>--force</code></td><td>Ignore checkpoints, re-run everything</td></tr>
+<tr><td><code>--coverage-threshold 90</code></td><td>P5 hard gate at 90%</td></tr>
+<tr><td><code>--ip-path ip_analog/foo</code></td><td>Non-default IP path</td></tr>
+<tr><td><code>--pdk sky130|nangate|auto</code></td><td>Override PDK for P6/P8</td></tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<h2>📁 New Module Skeleton</h2>
+<pre><code>mkdir -p ip_digital/common_cells/&lt;mod&gt;/{rtl,verification,build,logs}
+# rtl/&lt;mod&gt;.sv              — RTL source (SystemVerilog)
+# verification/&lt;mod&gt;.sby    — SymbiYosys formal spec
+# verification/&lt;mod&gt;.sdc    — timing constraints (100 MHz = -period 10.0)
+# verification/tb_&lt;mod&gt;.sv  — Verilog testbench
+# verification/test_&lt;mod&gt;.py — cocotb tests (@cocotb.test())</code><button class="cp" onclick="cp(this)">copy</button></pre>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<h2>🛠️ Tools on dada-ser</h2>
+<table>
+<tr><th>Tool</th><th>Version</th><th>Pillars</th></tr>
+<tr><td>Verilator</td><td>5.036</td><td>P1, P4, P5</td></tr>
+<tr><td>Yosys</td><td>0.33</td><td>P6, P7</td></tr>
+<tr><td>SymbiYosys</td><td>v0.64</td><td>P2</td></tr>
+<tr><td>OpenSTA</td><td>2.7.0</td><td>P8 STA</td></tr>
+<tr><td>Icarus</td><td>12.0</td><td>P3, P8 GLS</td></tr>
+<tr><td>cocotb</td><td>2.0.1</td><td>P3 (.venv/)</td></tr>
+<tr><td>sky130 PDK</td><td>volare 0fe599b</td><td>P6, P7, P8</td></tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<h2>❓ Troubleshooting</h2>
+
+<details><summary>Cannot connect — "Connection refused" or timeout</summary>
+<div class="faq">
+  <p>1. Check Tailscale is running on both machines: Windows system tray icon should be green.</p>
+  <p>2. Verify dada-ser is reachable from PowerShell:</p>
+  <pre><code>ping 100.125.23.67</code><button class="cp" onclick="cp(this)">copy</button></pre>
+  <p>3. If ping works but SSH doesn't, check sshd is running on dada-ser:</p>
+  <pre><code>sudo systemctl status ssh</code><button class="cp" onclick="cp(this)">copy</button></pre>
+  <p>4. Confirm your Windows SSH config has the right IP (<code>100.125.23.67</code>) and username (<code>dada</code>).</p>
+</div></details>
+
+<details><summary>SSH asks for password every time</summary>
+<div class="faq">
+  <p>Set up a key pair. In Windows PowerShell:</p>
+  <pre><code>ssh-keygen -t ed25519 -C "windows-laptop"
+type $env:USERPROFILE\.ssh\id_ed25519.pub | ssh dada@100.125.23.67 "cat >> ~/.ssh/authorized_keys"</code><button class="cp" onclick="cp(this)">copy</button></pre>
+</div></details>
+
+<details><summary>VSCode says "Remote-SSH host key changed"</summary>
+<div class="faq">
+  <p>dada-ser's host key may have changed (OS reinstall, etc). Remove the old key from Windows:</p>
+  <pre><code>ssh-keygen -R 100.125.23.67</code><button class="cp" onclick="cp(this)">copy</button></pre>
+  <p>Then reconnect — you'll be prompted to accept the new host key once.</p>
+</div></details>
+
+<details><summary><code>pillar</code> command not found after setup</summary>
+<div class="faq">
+  <p>Re-open the terminal (the venv and PATH are set in <code>~/.bashrc</code>). Or activate manually:</p>
+  <pre><code>source ~/.bashrc</code><button class="cp" onclick="cp(this)">copy</button></pre>
+</div></details>
+
+<details><summary>P2 Formal: ModuleNotFoundError: No module named 'click'</summary>
+<div class="faq"><pre><code>pip3 install click</code><button class="cp" onclick="cp(this)">copy</button></pre></div></details>
+
+<details><summary>P7 LEC always WARN (never PASS)</summary>
+<div class="faq"><p>Expected for sky130 — Yosys equiv can't normalize PDK black-box cells. WARN = inconclusive, not a failure. LEC PASS only appears for generic/nangate netlists. Use Cadence Conformal for sign-off LEC.</p></div></details>
+
+<details><summary>P8 GLS SKIP — no cell Verilog models</summary>
+<div class="faq">
+  <p>GLS needs sky130 behavioral Verilog. On dada-ser the symlinks are already in place:</p>
+  <pre><code>ls -la /home/dada/silicon_portfolio/lib/*.v</code><button class="cp" onclick="cp(this)">copy</button></pre>
+  <p>If missing (fresh clone), re-run setup or symlink manually:</p>
+  <pre><code>PDK=/home/dada/pdks/volare/sky130/versions/0fe599b2afb6708d281543108caf8310912f54af/sky130A/libs.ref/sky130_fd_sc_hd/verilog
+ln -s $PDK/primitives.v lib/sky130_primitives.v
+ln -s $PDK/sky130_fd_sc_hd.v lib/sky130_fd_sc_hd.v</code><button class="cp" onclick="cp(this)">copy</button></pre>
+</div></details>
+
+<details><summary>P6 Synthesis SKIP — no .lib files</summary>
+<div class="faq">
+  <p>On dada-ser the sky130 .lib symlinks should already be in <code>lib/</code>. If not:</p>
+  <pre><code>PDK=/home/dada/pdks/volare/sky130/versions/0fe599b2afb6708d281543108caf8310912f54af/sky130B/libs.ref/sky130_fd_sc_hd/lib
+ln -s $PDK/sky130_fd_sc_hd__tt_025C_1v80.lib lib/
+ln -s $PDK/sky130_fd_sc_hd__ss_n40C_1v28.lib lib/
+ln -s $PDK/sky130_fd_sc_hd__ff_n40C_1v76.lib lib/</code><button class="cp" onclick="cp(this)">copy</button></pre>
+</div></details>
+
+<details><summary>STA shows VIOLATED after synthesis</summary>
+<div class="faq"><p>Increase <code>-period</code> in your <code>.sdc</code> (sky130 max ~100 MHz at combinational depth ~5), or pipeline the critical path. Check <code>logs/sta_*.log</code> for the failing path endpoints.</p></div></details>
+
+<details><summary>Waveform viewing (VCD from P4 simulation)</summary>
+<div class="faq">
+  <p>The VCD is at <code>ip_digital/common_cells/&lt;mod&gt;/build/sim_*.vcd</code> on dada-ser.</p>
+  <p>Option A — view in browser: install the <span class="badge">WaveTrace</span> VSCode extension — it opens VCDs inline.</p>
+  <p>Option B — copy to Windows and open in GTKWave:</p>
+  <pre><code>scp dada@100.125.23.67:/home/dada/silicon_portfolio/ip_digital/common_cells/mod1000/build/sim_*.vcd .</code><button class="cp" onclick="cp(this)">copy</button></pre>
+</div></details>
+
+<script>
+function cp(btn){
+  navigator.clipboard.writeText(btn.previousSibling.textContent.trim()).then(()=>{
+    btn.textContent='✓';btn.classList.add('ok');
+    setTimeout(()=>{btn.textContent='copy';btn.classList.remove('ok')},1600);
+  });
+}
+</script>
+</body></html>

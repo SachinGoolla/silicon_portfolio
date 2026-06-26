@@ -1,0 +1,65 @@
+CAPI2:
+name: silicon_portfolio:common_cells:mod3ud:1.0.0
+description: "Modulo-3 up/down counter — gray-coded 3-bit output, synchronous reset"
+
+filesets:
+  rtl:
+    files:
+      - rtl/mod3ud.v
+    file_type: verilogSource
+
+  tb_icarus:
+    files:
+      - verification/tb_mod3ud.v
+    file_type: verilogSource
+    depend:
+      - silicon_portfolio:common_cells:mod3ud:1.0.0
+
+  tb_cocotb:
+    files:
+      - verification/test_mod3ud.py
+    file_type: pythonSource
+    depend:
+      - silicon_portfolio:common_cells:mod3ud:1.0.0
+
+  formal:
+    files:
+      - verification/mod3ud_formal.sv
+    file_type: systemVerilogSource
+    depend:
+      - silicon_portfolio:common_cells:mod3ud:1.0.0
+
+targets:
+  default: &default
+    filesets: [rtl]
+    toplevel: mod3ud
+
+  sim:
+    <<: *default
+    filesets: [rtl, tb_icarus]
+    toplevel: tb_mod3ud
+    tools:
+      icarus:
+        iverilog_options: ["-g2012"]
+
+  formal:
+    <<: *default
+    filesets: [rtl, formal]
+    toplevel: mod3ud
+    tools:
+      symbiyosys:
+        sby_file: verification/mod3ud.sby
+
+  synth:
+    <<: *default
+    filesets: [rtl]
+    tools:
+      yosys:
+        synth_flags: ["-flatten"]
+
+  lint:
+    <<: *default
+    filesets: [rtl]
+    tools:
+      verilator:
+        verilator_options: ["--lint-only", "-Wall"]

@@ -1,8 +1,89 @@
+# ============================================================
+# SILICON PORTFOLIO — .gitignore
+# Track: RTL source (.sv/.v), scripts (.py/.sh), CI (.yml),
+#        formal config (.sby), constraints (.sdc), docs (.md/.html)
+# Ignore: EVERYTHING generated, compiled, or downloaded
+# ============================================================
+
+# ── Python ──────────────────────────────────────────────────
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build.egg/
+
+# ── Module build & log artifacts ─────────────────────────────
+ip_digital/**/build/
+ip_digital/**/logs/
+ip_analog/**/build/
+ip_analog/**/logs/
+
+# ── Verilator generated objects ──────────────────────────────
+obj_dir*/
+*.o
+*.a
+
+# ── Formal verification working directories ──────────────────
+**/verification/*/
+
+# ── Simulator outputs ────────────────────────────────────────
 *.vcd
-*.fsdb
+*.fst
+*.lxt
+*.vvp
+*.vpi
+
+# ── Synthesis outputs ────────────────────────────────────────
+*_synth.v
+
+# ── Coverage ─────────────────────────────────────────────────
+coverage.dat
+annotated_cov/
+
+# ── Synthesis & STA generated per-corner TCL ─────────────────
+sta_*.tcl
+
+# ── Pillar state, reports, history ───────────────────────────
+.pillar_state.json
+.pillar_metrics.json
+.pillar_report_*.json
+.pillar_history.jsonl
+
+# ── Liberty / PDK files (symlinked from PDK install, not ours)─
+lib/
+
+# ── Docker build context ─────────────────────────────────────
+docker/
+
+# ── VSCode workspace ─────────────────────────────────────────
+.vscode/
+
+# ── Claude Code session data ─────────────────────────────────
+.claude/
+
+# ── OS & editor noise ────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+*.bak
+
+# ── Logs at any level ────────────────────────────────────────
 *.log
-*.jou
-*.spef
-*.gds
-work/
-sim_build/
+
+# ── Nix / home manager artefacts that may bleed in ──────────
+result
+result-*
+
+# ── Generated temporary / scratch files ──────────────────────
+*.tmp
+*.temp
+sim.vcd
+feedback.json
+metrics.json
+.baseline.json

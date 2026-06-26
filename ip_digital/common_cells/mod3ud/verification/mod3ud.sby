@@ -1,0 +1,15 @@
+[options]
+mode prove
+depth 30
+
+[engines]
+smtbmc z3
+
+[script]
+read_verilog mod3ud.v
+read -formal mod3ud_formal.sv
+prep -top mod3ud_formal
+
+[files]
+mod3ud.v
+mod3ud_formal.sv

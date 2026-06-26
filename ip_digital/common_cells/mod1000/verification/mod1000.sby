@@ -1,0 +1,13 @@
+[options]
+mode prove
+depth 20
+
+[engines]
+smtbmc z3
+
+[script]
+read -formal mod1000.sv
+prep -top mod1000
+
+[files]
+mod1000.sv
