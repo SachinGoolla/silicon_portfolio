@@ -702,7 +702,7 @@ class PillarFlow:
 
         # Build the base argument string for child invocations
         script = Path(__file__).resolve()
-        base = f"python {script} --top {self.top} --parallel-child"
+        base = f"{sys.executable} {script} --top {self.top} --parallel-child"
         if pdk != 'auto':
             base += f" --pdk {pdk}"
         if ip_path:

@@ -43,7 +43,7 @@ def run(flow) -> str:
     # RTL parameter overrides: --params KEY=VAL → Verilator -GKEY=VAL
     param_flags = " ".join(f"-G{k}={v}" for k, v in flow.params.items())
     compile_cmd = (
-        f"verilator --binary --assert --coverage --coverage-toggle --trace-fst --timing {sv_flag} "
+        f"verilator --binary --assert --coverage --coverage-toggle --coverage-expr --trace-fst --timing {sv_flag} "
         f"-y {flow.src_dir} --Mdir {obj_dir} --top-module tb_{flow.top} "
         f"{tb_file} {rtl_src} {param_flags} -CFLAGS '-O2' >> {log_file} 2>&1"
     )

@@ -1,0 +1,37 @@
+## async_fifo.upf — Power intent: two independent clock domains
+## WR_DOMAIN: write-side logic (wr_clk, wr_rst_n, wr_en, wr_data, full)
+## RD_DOMAIN: read-side logic  (rd_clk, rd_rst_n, rd_en, rd_data, empty)
+## Shared RAM array (mem[]) kept in ALWAYS_ON; isolation cells at domain boundaries.
+
+create_power_domain WR_DOMAIN \
+    -elements {async_fifo.wr_bin async_fifo.wr_gray async_fifo.rg2wr}
+
+create_power_domain RD_DOMAIN \
+    -elements {async_fifo.rd_bin async_fifo.rd_gray async_fifo.wg2rd async_fifo.mem}
+
+create_supply_net VDD_WR -domain WR_DOMAIN
+create_supply_net VDD_RD -domain RD_DOMAIN
+create_supply_net VSS
+
+create_supply_port VDD_WR -domain WR_DOMAIN
+create_supply_port VDD_RD -domain RD_DOMAIN
+create_supply_port VSS
+
+connect_supply_net VDD_WR -ports VDD_WR
+connect_supply_net VDD_RD -ports VDD_RD
+connect_supply_net VSS    -ports VSS
+
+## Isolation at domain crossings (gray-coded, so no logic — still must be defined)
+set_isolation WR_TO_RD \
+    -domain WR_DOMAIN \
+    -isolation_power_net VDD_RD \
+    -isolation_ground_net VSS \
+    -applies_to outputs \
+    -no_isolation
+
+set_isolation RD_TO_WR \
+    -domain RD_DOMAIN \
+    -isolation_power_net VDD_WR \
+    -isolation_ground_net VSS \
+    -applies_to outputs \
+    -no_isolation

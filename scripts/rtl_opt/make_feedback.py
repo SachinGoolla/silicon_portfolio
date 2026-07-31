@@ -11,7 +11,7 @@ Sources (per block, under <ip_dir>/build and <ip_dir>/logs):
 The LLM never sees raw logs — only feedback.json. That is the anti-hallucination line.
 
 Env (set by optimize.sh):
-  OPT_TARGET = ip path, e.g. ip_digital/alu/fpu_top
+  OPT_TARGET = ip path, e.g. ip_digital/fpu/fpu_top
   OPT_TOP    = top module, e.g. fpu_top
 Outputs at repo root: feedback.json (for optimizer) + metrics.json (for evaluate.py)
 """

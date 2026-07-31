@@ -1,0 +1,3 @@
+[submodule "tools/opencdc"]
+	path = tools/opencdc
+	url = https://github.com/aashishniranjanb/OpenCDC

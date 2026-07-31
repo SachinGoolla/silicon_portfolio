@@ -1,5 +1,8 @@
-"""Pillar 1 — Lint + CDC/RDC (Verilator --lint-only + static analysis). Returns PASS | FAIL | SKIP."""
+"""Pillar 1 — Lint + CDC/RDC (Verilator --lint-only + static + OpenCDC). Returns PASS | FAIL | SKIP."""
 import re
+import subprocess
+import sys
+from pathlib import Path
 from .common import C, Dashboard, LintLogParser, PILLAR_ICONS
 
 
@@ -62,6 +65,52 @@ def _run_cdc_static(flow, rtl_files) -> list[str]:
         yield w
 
 
+def _run_opencdc(flow, rtl_files) -> tuple[str, list[dict]]:
+    """Structural CDC analysis via OpenCDC on a Yosys `prep` netlist.
+
+    Uses `prep` (not `synth`) so $dff/$dffe cells are preserved with their
+    CLK connections — required for OpenCDC's domain comparison to work.
+    Returns (status, crossings_list).  Never raises; returns SKIP on any error.
+    """
+    opencdc_root = flow.root / "tools" / "opencdc"
+    if not opencdc_root.exists():
+        return "SKIP", []
+
+    if str(opencdc_root) not in sys.path:
+        sys.path.insert(0, str(opencdc_root))
+    try:
+        from opencdc.checker import check_netlist_file   # noqa: PLC0415
+    except ImportError:
+        return "SKIP", []
+
+    netlist_json = flow.build_dir / "lint" / f"{flow.top}_cdc.json"
+    netlist_json.parent.mkdir(parents=True, exist_ok=True)
+
+    sv_flag = "-sv" if any(f.suffix == ".sv" for f in rtl_files) else ""
+    rtl_str = " ".join(str(f) for f in rtl_files)
+    ys_script = (
+        f"read_verilog {sv_flag} {rtl_str}; "
+        f"prep -top {flow.top}; "
+        f"write_json {netlist_json}"
+    )
+
+    try:
+        proc = subprocess.run(
+            ["yosys", "-q", "-p", ys_script],
+            capture_output=True, text=True, timeout=90
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return "SKIP", []
+
+    if proc.returncode != 0:
+        return "WARN", []
+
+    try:
+        return "PASS", check_netlist_file(str(netlist_json))
+    except Exception:
+        return "WARN", []
+
+
 def run(flow) -> str:
     print(f"\n  {C.hdr('━━━ PILLAR 1: Lint + CDC/RDC')}  {PILLAR_ICONS[0]}  {C.dim(flow.top)}")
     rtl_files = flow._find_all_rtl()
@@ -97,8 +146,19 @@ def run(flow) -> str:
     cdc_log = flow.log_dir / f"cdc_{flow.top}.log"
     cdc_log.write_text("\n".join(cdc_warnings) if cdc_warnings else "No CDC/RDC issues detected.\n")
 
+    # ── OpenCDC structural analysis ───────────────────────────────────────────
+    print(f"     {C.info('▶')} Running OpenCDC structural crossing analysis...")
+    opencdc_status, opencdc_crossings = _run_opencdc(flow, rtl_files)
+    opencdc_log = flow.log_dir / f"opencdc_{flow.top}.log"
+    if opencdc_crossings:
+        lines = [f"{c['driver_ff']}(dom:{c['driver_domain']}) -> {c['sink_ff']}(dom:{c['sink_domain']})  net={c['net']}"
+                 for c in opencdc_crossings]
+        opencdc_log.write_text("\n".join(lines) + "\n")
+    else:
+        opencdc_log.write_text(f"OpenCDC: {opencdc_status}\n")
+
     # ── Dashboard ─────────────────────────────────────────────────────────────
-    dash = Dashboard("LINT + CDC/RDC — Verilator + Static", C.BCYAN)
+    dash = Dashboard("LINT + CDC/RDC — Verilator + Static + OpenCDC", C.BCYAN)
     dash.add_section_header("Lint")
     dash.add_metric("Warnings", m.warnings,
                     value_color=C.BYELLOW if m.warnings > 0 else C.BGREEN)
@@ -110,27 +170,49 @@ def run(flow) -> str:
         dash.add_section_header("Lint Warnings")
         for w in m.warning_details[:4]:
             dash.add_row("", w[:48])
-    dash.add_section_header("CDC / RDC")
+    dash.add_section_header("CDC / RDC (Static)")
     if cdc_warnings:
-        dash.add_metric("CDC/RDC Flags", len(cdc_warnings),
-                        value_color=C.BYELLOW)
+        dash.add_metric("Static Flags", len(cdc_warnings), value_color=C.BYELLOW)
         for w in cdc_warnings[:3]:
             dash.add_row("  flag", w[:44])
     else:
-        dash.add_metric("CDC/RDC Flags", "0 (clean)", value_color=C.BGREEN)
+        dash.add_metric("Static Flags", "0 (clean)", value_color=C.BGREEN)
+    dash.add_section_header("OpenCDC — Structural")
+    if opencdc_status == "SKIP":
+        dash.add_metric("OpenCDC", "SKIP (tool not found)", value_color=C.DIM)
+    elif opencdc_status == "WARN":
+        dash.add_metric("OpenCDC", "WARN (netlist gen failed)", value_color=C.BYELLOW)
+    elif opencdc_crossings:
+        dash.add_metric("CDC Crossings", len(opencdc_crossings), value_color=C.BYELLOW)
+        # Group by domain pair for concise display
+        pairs: dict = {}
+        for c in opencdc_crossings:
+            k = (c['driver_domain'], c['sink_domain'])
+            pairs[k] = pairs.get(k, 0) + 1
+        for (d_dom, s_dom), cnt in list(pairs.items())[:4]:
+            dash.add_row("  crossing", f"dom:{d_dom} → dom:{s_dom}  ({cnt} nets)")
+    else:
+        dash.add_metric("CDC Crossings", "0 (no unsynced crossings)", value_color=C.BGREEN)
 
-    # ── Structured insights: 2 good, 2 warn, 2 improve ──────────────────────────
+    # ── Insights ─────────────────────────────────────────────────────────────
     if m.errors == 0:
-        dash.add_insight("Zero lint errors — RTL compiles cleanly and synthesizers will see exactly the logic you intend.", "good")
+        dash.add_insight("Zero lint errors — RTL compiles cleanly; synthesizers see exactly the intended logic.", "good")
     if m.warnings == 0 and not cdc_warnings:
-        dash.add_insight("No CDC/RDC flags detected — clock-domain crossings are either absent or properly synchronized.", "good")
+        dash.add_insight("No static CDC/RDC flags — clock-domain crossings are absent or properly synchronized.", "good")
+    if opencdc_crossings:
+        dash.add_insight(
+            f"OpenCDC found {len(opencdc_crossings)} FF→FF crossing(s) — ADVISORY. "
+            "Verify each sink FF is the first stage of a 2-FF synchronizer.", "warn")
+        dash.add_insight("OpenCDC detects raw structural crossings; it cannot distinguish a synchronizer "
+                         "first-stage from an unprotected crossing — manual review required.", "improve")
+    elif opencdc_status == "PASS":
+        dash.add_insight("OpenCDC: no raw FF→FF crossings detected — single-clock or fully synchronised design.", "good")
     if m.errors > 0:
-        dash.add_insight(f"{m.errors} lint error(s) found — these are hard failures that will corrupt synthesis netlist.", "warn")
-    if m.warnings > 5:
-        dash.add_insight(f"{m.warnings} warnings — width mismatches and undriven nets can mask functional bugs at the boundary.", "warn")
+        dash.add_insight(f"{m.errors} lint error(s) — hard failures that corrupt the synthesis netlist.", "warn")
     if cdc_warnings:
-        dash.add_insight("CDC flags are advisory (static regex scan only). Use Meridian CDC or VC Formal CDC for sign-off.", "improve")
-    dash.add_insight("Add `// synopsys translate_off` guards around simulation-only code to keep lint warnings minimal.", "improve")
+        dash.add_insight("Static CDC flags are advisory (regex scan). Use Meridian CDC or VC Formal CDC for sign-off.", "improve")
+    dash.add_insight("OpenCDC uses Yosys `prep` netlist — structural, not timing-aware. "
+                     "Report to tools/opencdc/ if false positives appear.", "improve")
     dash.print()
 
     if result.returncode != 0:
@@ -138,6 +220,9 @@ def run(flow) -> str:
         return "FAIL"
 
     flow.update_checkpoint("lint", rtl_files)
-    cdc_suffix = f" | {len(cdc_warnings)} CDC flags" if cdc_warnings else " | CDC clean"
-    print(f"  {C.ok('✓ Lint PASS')}  {C.dim(f'log → {log_file.name}{cdc_suffix}')}")
+    cdc_suffix   = f" | {len(cdc_warnings)} CDC flags" if cdc_warnings else " | CDC clean"
+    opencdc_sfx  = (f" | OpenCDC {len(opencdc_crossings)} xings"
+                    if opencdc_crossings else
+                    (f" | OpenCDC {opencdc_status}" if opencdc_status != "PASS" else " | OpenCDC 0"))
+    print(f"  {C.ok('✓ Lint PASS')}  {C.dim(f'log → {log_file.name}{cdc_suffix}{opencdc_sfx}')}")
     return "PASS"

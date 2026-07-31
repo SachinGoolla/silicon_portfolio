@@ -1,0 +1,245 @@
+================================================================================
+rr_arbiter  —  Microarchitecture Specification
+N-way Burst-Aware Masked Round-Robin Arbiter
+Revision 1.0  |  2026-07-29
+================================================================================
+
+-
+1. MOTIVATION AND CONTEXT
+──────────────────────────────────────────────────────────────────────────────
+
+Why does this IP exist?
+
+fpu_top contains four functional units with asymmetric pipeline depths:
+
+  Unit       Module           Latency (cycles)
+  ─────────────────────────────────────────────
+  NONCOMP    fpu_noncomp.sv   1  (FCLASS, FSGNJ, compare, FMIN/FMAX)
+  CVT        fpu_cvt.sv       2  (FCVT int↔fp, FMV)
+  FMA        fpu_fma.sv       6  (FADD, FSUB, FMUL, FMA; EX3-split)
+  DIVSQRT    fpu_divsqrt.sv   2–27  (iterative SRT radix-4)
+
+In a dual-issue processor, two instructions can be dispatched on consecutive
+cycles.  Example collision scenario:
+
+  Cycle 0:  FMA   issued → completes at cycle 6
+  Cycle 5:  NONCOMP issued → completes at cycle 6
+
+Both units assert their writeback request on cycle 6.  Without arbitration the
+result bus (result[31:0] + fflags[4:0]) would be driven by two sources
+simultaneously — a bus fight that corrupts both results.
+
+rr_arbiter serialises the writeback bus, granting exactly one unit per cycle.
+Round-robin fairness prevents NONCOMP from starving while a sequence of FMA
+operations fills the pipeline.
+
+
+2. INDUSTRY RELEVANCE (2025–2026)
+──────────────────────────────────────────────────────────────────────────────
+
+The arbitration problem solved here appears at every level of modern SoC design:
+
+  Domain                     Arbiter role
+  ─────────────────────────────────────────────────────────────────────────────
+  AI/NPU systolic arrays     PE rows contend for SRAM write-back ports
+  AXI4 interconnect          N AXI masters share an AXI slave port; burst locking
+                             is mandated by the AXI4 spec (IHI0022H §A3.3)
+  HBM/GDDR memory ctrl       Multiple request queues (read, write, prefetch) share
+                             one DRAM command interface; weighted RR is standard
+  NoC router                 Input VCs arbitrate for crossbar output ports;
+                             iSLIP / DRRR are industry baselines
+  Chiplet UCIe PHY           Multiple logical links share one serialised channel;
+                             fairness across chiplet boundaries requires provable
+                             no-starvation
+
+The key differentiating features of this implementation:
+
+  Feature           Why it matters
+  ─────────────────────────────────────────────────────────────────────────────
+  mask_i            Power-gated units must not receive grants.  This is a
+                    low-power design requirement; the mask interface allows the
+                    PMU to cleanly exclude a shut-down domain without modifying
+                    the arbiter logic.
+  burst_lock_i      AXI4 mandates that a master retains ownership for the full
+  / last_i          burst (ARLEN+1 beats).  Without burst locking, a mid-burst
+                    revocation corrupts data ordering.  This feature is a
+                    prerequisite for any AXI crossbar design.
+  Registered grant  Combinational grants create long paths: requester logic →
+                    arbiter priority tree → downstream MUX → flip-flop.
+                    Registering the grant breaks that path cleanly, enabling
+                    timing closure at higher frequencies.
+  Formal proof      Mutual exclusion (ONEHOT0) and burst atomicity (BURST_ATOMIC)
+                    are proved by z3 k-induction, not just simulated.  Safety
+                    properties that can be formally verified command sign-off
+                    confidence simulation alone cannot provide.
+
+
+3. INTERFACE
+──────────────────────────────────────────────────────────────────────────────
+
+  Parameter  Default  Description
+  ────────────────────────────────────────────────────────────────────────────
+  N_REQ      4        Number of requesters.  4 for fpu_top; scales to 16 before
+                      the priority tree timing becomes a concern at 80 MHz sky130.
+
+  Port           Dir  Width      Description
+  ────────────────────────────────────────────────────────────────────────────
+  clk            in   1          System clock (80 MHz, same domain as fpu_top)
+  rst_n          in   1          Active-low async reset
+  req_i          in   N_REQ      Request: unit k wants the writeback bus
+  mask_i         in   N_REQ      Mask: unit k is power-gated, exclude from RR
+  burst_lock_i   in   1          Hold current grant (burst active)
+  last_i         in   1          Burst last beat; release lock after this cycle
+  grant_o        out  N_REQ      One-hot grant (0 = no grant this cycle)
+  gnt_valid_o    out  1          |grant_o; fast stall signal for upstream logic
+
+
+4. BLOCK DIAGRAM
+──────────────────────────────────────────────────────────────────────────────
+
+                         req_i[N-1:0]
+                              │
+                mask_i ──────►│ AND (~mask)
+                              ▼
+                         active_req
+                              │
+                pp_q ────────►│ AND (prio_mask)
+         (one-hot,            ▼
+          registered)    masked_req
+                              │
+                        [lowest_set]  ◄── if masked_req == 0, use active_req
+                              │
+                         next_grant
+                              │
+              burst_hold ─────┤ MUX (freeze or accept)
+              (lock&&!last)   │
+                              ▼
+                         ┌─────────┐
+                    ───►│  grant_q │►──── grant_o (one-hot)
+                    │    │  pp_q   │       │
+                    │    └────┬────┘       ▼
+                    │         │         gnt_valid_o
+                    │    [left-rotate]
+                    └─────────┘
+                     (pp advances to
+                      next slot after
+                      granted winner)
+
+  Key invariants:
+    • pp_q is always one-hot (maintained by reset and rotate)
+    • grant_o is always one-hot-or-zero (maintained by lowest_set)
+    • Both proved by formal (PP_ONEHOT, ONEHOT0 assertions)
+
+
+5. ALGORITHM
+──────────────────────────────────────────────────────────────────────────────
+
+  RR selection (one clock cycle):
+
+  1. active_req  = req_i & ~mask_i
+     (exclude power-gated units)
+
+  2. prio_mask   = ~(pp_q - 1)
+     (all bits at or above the priority pointer position)
+     Derivation: pp_q is one-hot, so (pp_q-1) sets all bits below the pointer.
+     Inverting gives bits ≥ pp_q.
+
+  3. masked_req  = active_req & prio_mask
+     (only requests at or after the pointer — avoids re-granting recently served)
+
+  4. next_grant  = lowest_set(masked_req)    if masked_req ≠ 0
+                 = lowest_set(active_req)    otherwise (wrap-around)
+     lowest_set(v) = v & (-v)
+
+  5. If burst_hold: grant_q unchanged
+     Else if active_req: grant_q ← next_grant; pp_q ← left_rotate(next_grant)
+     Else: grant_q ← 0
+
+  Wrap-around example (N=4):
+    State:  pp_q=4'b1000 (req[3] has priority), req_i=4'b1001 (req[0,3])
+    prio_mask = ~(8-1) = ~7 = 4'b1000
+    masked_req = 4'b1001 & 4'b1000 = 4'b1000  → grant req[3]
+    pp_q ← rotate(4'b1000) = 4'b0001  (wrap to req[0])
+
+    Next cycle:
+    prio_mask = ~(1-1) = ~0 = 4'b1111
+    masked_req = 4'b1001 & 4'b1111 = 4'b1001 → lowest = 4'b0001 → grant req[0]
+
+
+6. FORMAL VERIFICATION SCOPE
+──────────────────────────────────────────────────────────────────────────────
+
+  Tool: SymbiYosys (sby) + z3 SMT solver, mode prove, depth 15
+
+  Property          Tag             Claim
+  ─────────────────────────────────────────────────────────────────────────────
+  F1  Mutual excl.  ONEHOT0         $onehot0(grant_o) holds every cycle
+  F2  Mask respect  NO_MASK_GNT     (grant_o & mask_i) == 0 always
+  F3  Burst atomic  BURST_ATOMIC    grant_o unchanged while burst_lock_i && !last_i
+  F4  Ptr invariant PP_ONEHOT       pp_q is always exactly one-hot
+  Cover             COV_GRANT[k]    grant_o[k] is reachable ∀k ∈ [0, N_REQ-1]
+
+  What formal does NOT claim:
+  • No-starvation is a liveness property.  Standard k-induction (safety-only)
+    cannot prove liveness.  The cover properties demonstrate that each grant
+    is REACHABLE but do not bound the wait time to N cycles.
+  • Liveness proof requires temporal induction or model checking with bounded
+    fairness assumptions (e.g., ∀k: ◻(req_i[k] → ◇grant_o[k])).
+    This would require tools such as JasperGold or mFormal; not available in
+    the OSS flow.  The simulation tests (test_rr_arbiter.py) verify this
+    behaviorally for N=4.
+
+
+7. PIPELINE AND TIMING
+──────────────────────────────────────────────────────────────────────────────
+
+  Cycle   N     req_i asserted; next_grant resolved combinationally
+  Cycle  N+1    grant_q captures next_grant; grant_o stable for entire cycle
+
+  Combinational depth (N=4, sky130 typical):
+    active_req computation:  1 AND layer     ~0.15 ns
+    prio_mask computation:   1 SUB + 1 INV   ~0.30 ns
+    lowest_set:              1 NEG + 1 AND   ~0.30 ns
+    MUX (masked vs wrap):    1 OR + 1 AND    ~0.20 ns
+    Total                                    ~0.95 ns
+
+  At 80 MHz (12.5 ns period) with 2 ns input delay → 10.5 ns available.
+  Critical path is 0.95 ns → ~11× margin at N=4.
+  Scales without timing concern up to N≈32 at 80 MHz sky130.
+
+  PPA vs N_REQ (sky130 synthesis estimates, actual from P6 sweep):
+  ┌────────┬──────────────────┬──────────────────┬──────────────────┐
+  │ N_REQ  │  Cells (P6)      │  TT WNS (P8)     │  Power (est.)    │
+  ├────────┼──────────────────┼──────────────────┼──────────────────┤
+  │  4     │  (see P6 report) │  (see P8 report) │  (see P6 report) │
+  │  8     │  run: N=8        │  run: N=8        │  run: N=8        │
+  │  16    │  run: N=16       │  run: N=16       │  run: N=16       │
+  └────────┴──────────────────┴──────────────────┴──────────────────┘
+  Sweep: pillar --top rr_arbiter --step synth  (then check history)
+
+
+8. FPU_TOP INTEGRATION CONTEXT
+──────────────────────────────────────────────────────────────────────────────
+
+  Planned instantiation in fpu_subsystem (ip_digital/fpu/fpu_subsystem/):
+
+    rr_arbiter #(.N_REQ(4)) u_wb_arb (
+        .clk          (clk),
+        .rst_n        (rst_n),
+        .req_i        ({divsqrt_wb_valid, fma_wb_valid,
+                        cvt_wb_valid,     noncomp_wb_valid}),
+        .mask_i       (unit_clk_gate),   // from fpu_clk_gate_ctrl.sv
+        .burst_lock_i (1'b0),            // single-beat WB; burst for future ext
+        .last_i       (1'b0),
+        .grant_o      (wb_grant),
+        .gnt_valid_o  (wb_valid)
+    );
+
+  The mask_i is directly wired to fpu_clk_gate_ctrl's unit-enable outputs.
+  When a unit's clock is gated (enable=0), its mask bit is asserted, removing
+  it from RR consideration without modifying the arbiter itself.
+
+  This demonstrates the separation of concerns between:
+    fpu_clk_gate_ctrl.sv  — WHEN to enable units (power policy)
+    rr_arbiter.sv         — WHO gets the bus (fairness policy)
+================================================================================

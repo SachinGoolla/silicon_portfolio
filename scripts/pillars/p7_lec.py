@@ -128,9 +128,12 @@ def _write_miter(path: Path, top: str, ports: list) -> None:
     """
     inputs  = [(w, n) for d, w, n in ports if d == 'input']
     outputs = [(w, n) for d, w, n in ports if d == 'output']
-    clk     = next((n for _, n in inputs if n.lower() in ('clk', 'clock', 'clk_i')), None)
-    rst     = next((n for _, n in inputs
-                    if n.lower() in ('rst', 'reset', 'rst_n', 'arst', 'arst_n', 'rstn')), None)
+    # Flexible matching: catches wr_clk/rd_clk, clk_i, sys_clock, etc.
+    clk      = next((n for _, n in inputs
+                     if 'clk' in n.lower() or 'clock' in n.lower()), None)
+    # Collect ALL reset signals so multi-clock designs (async_fifo) get both assumed.
+    rst_list = [n for _, n in inputs
+                if any(x in n.lower() for x in ('rst', 'reset', 'arst'))]
 
     L = ["// Auto-generated LEC miter for SymbiYosys"]
     L.append("module lec_miter(")
@@ -160,8 +163,13 @@ def _write_miter(path: Path, top: str, ports: list) -> None:
         L.append("    initial init_seen = 1'b0;")
         L.append(f"    always @(posedge {clk}) init_seen <= 1'b1;")
         L.append("")
-        if rst:
-            L.append(f"    always @(*) if (!init_seen) assume({rst} == 1'b1);")
+        for rst in rst_list:
+            # Active-low reset signals (names ending _n / _b, or 'rstn') need
+            # to be driven LOW to apply reset; active-high signals driven HIGH.
+            active_low  = rst.lower().endswith(('_n', '_b')) or rst.lower() in ('rstn',)
+            reset_level = "1'b0" if active_low else "1'b1"
+            L.append(f"    always @(*) if (!init_seen) assume({rst} == {reset_level});")
+        if rst_list:
             L.append("")
         L.append(f"    always @(posedge {clk}) begin")
         L.append("        if (init_seen) begin")

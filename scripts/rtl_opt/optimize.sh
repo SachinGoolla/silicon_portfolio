@@ -2,14 +2,14 @@
 # optimize.sh — deterministic, REUSABLE RTL optimization loop for the
 # silicon_portfolio pillar flow. Works on ANY ip_digital block.
 #
-#   ./scripts/rtl_opt/optimize.sh ip_digital/alu/fpu_top
+#   ./scripts/rtl_opt/optimize.sh ip_digital/fpu/fpu_top
 #
 # The block's opt.spec.yaml supplies top, ip_path, flow_cmd, targets, budgets.
 # The LOOP is shell (0 tokens). The only LLM call per iteration is a fresh
 # `claude -p` seeing CLAUDE.md + feedback.json + 1 file, so context never grows.
 set -uo pipefail
 
-TARGET="${1:?usage: optimize.sh <ip_path, e.g. ip_digital/alu/fpu_top>}"
+TARGET="${1:?usage: optimize.sh <ip_path, e.g. ip_digital/fpu/fpu_top>}"
 REPO="$(git rev-parse --show-toplevel)"; cd "$REPO"
 ENGINE="$(cd "$(dirname "$0")" && pwd)"
 TARGET="${TARGET%/}"

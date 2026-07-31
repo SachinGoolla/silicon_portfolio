@@ -1,5 +1,36 @@
 """Pillar 6 — Synthesis (Yosys RTL→gate netlist). Returns PASS | FAIL | SKIP."""
+from pathlib import Path
+import re as _re
 from .common import C, Dashboard, SynthLogParser, SynthMetrics, PILLAR_ICONS
+
+
+def _filter_liberty_lpflow(src: Path, dst: Path) -> int:
+    """Write a copy of *src* liberty with all lpflow_* cells removed.
+
+    Yosys 0.33 abc has no -dont_use flag, so we pre-filter the liberty.
+    sky130 lpflow_isobufsrc_1 / lpflow_inputiso1p_1 implement X = A AND NOT(SLEEP).
+    abc picks them as cheap AND gates at TT corner, but at SS (-40 °C / 1.28 V)
+    they carry 30+ ns derating — destroying timing.  The filtered liberty forces
+    abc to use standard nand2/and2 cells, which is an equivalence-preserving
+    remapping of the same RTL function.
+    Returns the number of cell blocks removed.
+    """
+    lines = src.read_text().splitlines(keepends=True)
+    out, depth, in_skip, removed = [], 0, False, 0
+    for line in lines:
+        if not in_skip and _re.search(r'\bcell\s*\(\s*"?\s*sky130_fd_sc_hd__lpflow_', line):
+            in_skip = True
+            removed += 1
+            depth = line.count('{') - line.count('}')
+            continue
+        if in_skip:
+            depth += line.count('{') - line.count('}')
+            if depth <= 0:
+                in_skip = False
+            continue
+        out.append(line)
+    dst.write_text(''.join(out))
+    return removed
 
 
 def run(flow) -> str:
@@ -19,35 +50,20 @@ def run(flow) -> str:
     rtl_str   = " ".join(str(f) for f in flow._find_all_rtl())
     sv_flag   = "-sv" if (top_rtl and top_rtl.suffix == ".sv") else ""
 
-    # Write a Yosys script file so we can exclude low-power isolation cells.
-    # lpflow_isobufsrc_1 and related sky130 power-domain cells appear in the
-    # liberty but have extreme SS-corner derating (30+ ns at 1.28 V / -40 °C).
-    # They are architectural primitives for power-domain isolation and must not
-    # appear in combinational logic paths.  We replace them with a buf_2 after
-    # abc mapping via an inline techmap.
-    # -D 10000: tell abc the target is 10 ns (10000 ps) so it optimises for
-    #           timing balance rather than pure area (which -D 100 forced).
+    # Pre-filter the liberty to exclude lpflow power-isolation cells.
+    # This is done before abc so it remaps the same logic to standard cells.
+    tt_lib_noiso = sta_dir / f"{Path(tt_lib).stem}_nolpflow.lib"
+    n_removed = _filter_liberty_lpflow(Path(tt_lib), tt_lib_noiso)
+    if n_removed:
+        print(f"     {C.info('▶')} Filtered {n_removed} lpflow cells from liberty → {tt_lib_noiso.name}")
+
     synth_ys = sta_dir / f"synth_{flow.top}.ys"
-    lpflow_techmap = sta_dir / "lpflow_replace.v"
-    lpflow_techmap.write_text(
-        # Inline techmap: treat lpflow_isobufsrc_1 as a plain buffer.
-        # SLEEP_B is tied high in fully-powered domains, making the cell
-        # electrically equivalent to a buffer in normal operation.
-        '(* techmap_celltype = "sky130_fd_sc_hd__lpflow_isobufsrc_1" *)\n'
-        'module sky130_fd_sc_hd__lpflow_isobufsrc_1'
-        '(output X, input A, SLEEP_B, VPWR, VGND, VPB, VNB);\n'
-        '  sky130_fd_sc_hd__buf_2 _impl_(.X(X),.A(A),'
-        '.VPWR(VPWR),.VGND(VGND),.VPB(VPB),.VNB(VNB));\n'
-        'endmodule\n'
-    )
     synth_ys.write_text(
         f"read_verilog {sv_flag} -D SYNTHESIS -defer {rtl_str}\n"
         f"hierarchy -check -top {flow.top}\n"
         f"synth -top {flow.top}\n"
         f"dfflibmap -liberty {tt_lib}\n"
-        f"abc -liberty {tt_lib} -D 10000\n"
-        # Replace any lpflow isolation cells abc may have chosen with buf_2
-        f"techmap -map {lpflow_techmap}\n"
+        f"abc -liberty {tt_lib_noiso} -D 12500\n"
         f"clean\n"
         f"write_verilog -noattr -noexpr {synth_v}\n"
     )
@@ -79,17 +95,19 @@ def run(flow) -> str:
         dash.add_section_header(f"Cell Mix ({len(cell_breakdown)} types)")
         for cell, count in sorted(cell_breakdown.items(), key=lambda x: -x[1]):
             dash.add_row(cell[:24], str(count))
-    # ── Structured insights: 2 good, 2 warn, 2 improve ──────────────────────────
+    # ── Structured insights ───────────────────────────────────────────────────────
     dash.add_insight(f"Synthesis completed with {cells} cells — gate netlist is ready for LEC and STA.", "good")
     ff_cells = sum(v for k, v in cell_breakdown.items() if 'dff' in k.lower() or 'ff' in k.lower())
     if ff_cells > 0:
         dash.add_insight(f"{ff_cells} flip-flops mapped — SS corner governs setup timing; FF corner governs hold (both swept in P8).", "good")
+    if n_removed:
+        dash.add_insight(f"lpflow isolation cells excluded from abc liberty — standard nand2/and2 used instead (no 30 ns SS derating).", "good")
     if cells == 0:
         dash.add_insight("Zero cells in netlist — synthesis may have optimized away all logic; check for missing top-level ports.", "warn")
     combo_ratio = (cells - ff_cells) / max(cells, 1)
     if combo_ratio > 0.9 and cells > 10:
         dash.add_insight(f"High combinational ratio ({combo_ratio*100:.0f}% of cells) — deep combinational paths risk timing closure at speed.", "warn")
-    dash.add_insight("abc -D 10000 active — timing-aware mapping targeting 10 ns (100 MHz) critical path.", "good")
+    dash.add_insight("abc -D 12500 active — timing-aware mapping targeting 12.5 ns (80 MHz) critical path.", "good")
     dash.add_insight("Add `set_max_fanout` and `set_max_transition` constraints in .sdc to guide synthesis optimization.", "improve")
     dash.print()
 

@@ -1,0 +1,123 @@
+async_fifo — Dual-Clock Gray-Code Asynchronous FIFO
+=====================================================
+Based on Clifford Cummings, "Simulation and Synthesis Techniques for
+Asynchronous FIFO Design", SNUG San Jose 2002, Rev 1.1.
+
+Parameters
+----------
+  DATA_W      = 32   (configurable, default 32)
+  DEPTH       = 8    (configurable, must be power-of-2 >= 4)
+  SYNC_STAGES = 2    (synchronizer depth; >= 2 for metastability MTBF)
+  ADDR_W      = log2(DEPTH) = 3
+  PTR_W       = ADDR_W + 1 = 4 (extra MSB disambiguates full vs. empty)
+
+Interface
+---------
+  Write domain (wr_clk):
+    wr_clk, wr_rst_n — clock and active-low reset
+    wr_en            — write enable (write occurs when wr_en=1 && !full)
+    wr_data[31:0]    — data to write
+    full             — asserted when FIFO cannot accept another word
+
+  Read domain (rd_clk):
+    rd_clk, rd_rst_n — clock and active-low reset
+    rd_en            — read enable (read occurs when rd_en=1 && !empty)
+    rd_data[31:0]    — data output (registered; valid one cycle after rd_en && !empty)
+    empty            — asserted when FIFO has no data
+
+Block Diagram
+-------------
+            wr_clk domain                  rd_clk domain
+         ┌───────────────────┐          ┌───────────────────┐
+  wr_en─►│  wr_bin (binary)  │          │  rd_bin (binary)  │◄─rd_en
+wr_data─►│  b2g() → wr_gray  │──────────┼►wg2rd[0]          │
+         │  mem[] write port │          │  wg2rd[1]         │─► empty
+  full◄──│  full flag logic  │   ┌──────│► rd_data register │
+         │  rg2wr[0]◄───────────◄┘     │  b2g() → rd_gray  │
+         │  rg2wr[1]         │          │  mem[] read port  │
+         └───────────────────┘          └───────────────────┘
+                  ↑ rd_gray crossing                ↑ wr_gray crossing
+
+Functional Description
+----------------------
+
+Write path:
+  On posedge wr_clk, if wr_en && !full:
+    mem[wr_bin[ADDR_W-1:0]] ← wr_data
+    wr_bin ← wr_bin + 1
+    wr_gray ← b2g(wr_bin + 1)  // one-hot transition per Gray increment
+
+Read path:
+  On posedge rd_clk, if rd_en && !empty:
+    rd_data ← mem[rd_bin[ADDR_W-1:0]]  // registered: valid next cycle
+    rd_bin ← rd_bin + 1
+    rd_gray ← b2g(rd_bin + 1)
+
+Synchronisers (2-FF chain):
+  Write→Read (wr_gray to rd domain):
+    always_ff @(posedge rd_clk):
+      wg2rd[0] ← wr_gray         // first stage: may metastabilise
+      wg2rd[1] ← wg2rd[0]        // second stage: resolved by rd_clk
+
+  Read→Write (rd_gray to wr domain):
+    always_ff @(posedge wr_clk):
+      rg2wr[0] ← rd_gray         // first stage: may metastabilise
+      rg2wr[1] ← rg2wr[0]        // second stage: resolved by wr_clk
+
+Empty detection (rd domain, using synchronised wr pointer):
+  empty = (rd_gray == wg2rd[SYNC_STAGES-1])
+  Compares gray-coded pointers directly — only one bit changes per
+  gray-code increment, so this comparison is glitch-free.
+
+Full detection (wr domain, using synchronised rd pointer):
+  full = (wr_gray == {~rg2wr[SYNC_STAGES-1][PTR_W-1:PTR_W-2],
+                       rg2wr[SYNC_STAGES-1][PTR_W-3:0]})
+  The top two bits are inverted because when the FIFO is full, the
+  write pointer has wrapped past the read pointer exactly once
+  (i.e., they differ only in the top-2 bits, which are 01 vs 10 for
+  the MSBs of the gray code).
+
+Gray-Code Properties
+--------------------
+  - Only one bit changes between adjacent values (unit-distance code).
+  - Makes it safe to sample across clock domains: even if the sender
+    is mid-transition, the sampler sees either the old or new value —
+    never a spurious intermediate value (single-bit metastability
+    resolves to one of the two adjacent values).
+  - For PTR_W=4 (DEPTH=8): 0000→0001→0011→0010→0110→0111→0101→0100→1100→...
+    (the MSB wraps from 0→1 at count 8, disambiguating full from empty).
+
+CDC Safety Analysis
+-------------------
+  - The only cross-domain signals are wr_gray and rd_gray (gray-coded,
+    1-bit change per cycle), fed into 2-FF synchronisers.
+  - 2-FF synchroniser MTBF at 100/33 MHz: >> 10 years (standard for
+    TSMC 28 nm or Sky130; adequate for silicon portfolio demonstration).
+  - mem[] is written on wr_clk and read on rd_clk. The pointer
+    discipline (empty/full flags enforced before read/write) ensures
+    the same array location is never simultaneously written and read.
+    This is safe without additional synchronisation because full/empty
+    are conservative: empty de-asserts only after wg2rd settles, and
+    full de-asserts only after rg2wr settles.
+  - OpenCDC (P1) detects 8 structural crossings (4 per direction):
+    these are the synchroniser first stages and are expected.
+
+Pointer Arithmetic Example (DEPTH=8, PTR_W=4)
+----------------------------------------------
+  State: wr_bin=8 (0b1000), rd_bin=0 (0b0000)
+  wr_gray = b2g(8) = 8 ^ 4 = 12 = 0b1100
+  rd_gray = b2g(0) = 0 ^ 0 =  0 = 0b0000
+  rg2wr settled = 0b0000
+  full check:
+    {~rg2wr[3:2], rg2wr[1:0]} = {~00, 00} = {11, 00} = 0b1100
+    wr_gray (0b1100) == 0b1100  →  full = 1  ✓
+
+Known Limitations
+-----------------
+  - Conservative full/empty: stale synchronised pointer means the FIFO
+    may appear full/empty for up to SYNC_STAGES extra cycles after the
+    true state changes. Effective usable depth is DEPTH - SYNC_STAGES
+    in worst-case timing scenarios.
+  - No out-of-order access, no read-while-write to same address (by design).
+  - DEPTH must be a power-of-2 >= 4; the full-detection expression uses
+    PTR_W-3 slice which is invalid for DEPTH < 4 (PTR_W < 3).

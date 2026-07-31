@@ -1,4 +1,5 @@
-"""Pillar 3 — Functional (cocotb / Icarus). Returns PASS | FAIL | SKIP."""
+"""Pillar 3 — Functional (cocotb / Icarus + pyuvm). Returns PASS | FAIL | SKIP."""
+import sys
 from pathlib import Path
 from .common import (C, Dashboard, FunctionalLogParser, FunctionalXMLParser,
                      FunctionalMetrics, PILLAR_ICONS)
@@ -51,6 +52,53 @@ def _run_vlog_tb(flow, tb_file: Path, rtl_files: list) -> str:
     return status
 
 
+def _run_uvm(flow) -> str:
+    """Run pyuvm tests from verification/uvm/tests/ if present."""
+    scripts_uvm = flow.root / "scripts" / "uvm"
+    if str(scripts_uvm) not in sys.path:
+        sys.path.insert(0, str(scripts_uvm))
+
+    try:
+        from uvm.runner import UVMRunner   # noqa: PLC0415
+    except ImportError:
+        print(f"     {C.warn('⚠')} scripts/uvm not found — skipping pyuvm runner")
+        return "SKIP"
+
+    runner = UVMRunner(flow)
+    if not runner.has_tests():
+        return "SKIP"
+
+    print(f"     {C.info('▶')} Running pyuvm tests (Icarus + cocotb VPI, no Makefile)...")
+    summary = runner.run()
+
+    pct = int((summary.passed / summary.total) * 100) if summary.total > 0 else 0
+    dash = Dashboard("FUNCTIONAL — pyuvm / Icarus", C.BGREEN)
+    dash.add_metric("UVM Tests Total",  summary.total)
+    dash.add_metric("Passed",           summary.passed,
+                    value_color=C.BGREEN if summary.passed == summary.total and summary.total > 0 else C.BYELLOW)
+    dash.add_metric("Failed",           summary.failed,
+                    value_color=C.BRED if summary.failed > 0 else C.BGREEN)
+    dash.add_metric("Skipped",          summary.skipped)
+    dash.add_metric("Errors",           summary.errors,
+                    value_color=C.BRED if summary.errors > 0 else C.BGREEN)
+    if summary.details:
+        dash.add_section_header("Test Details")
+        for td in summary.details[:10]:
+            dash.add_row(td.name[:32], td.status,
+                         C.BGREEN if td.status == "PASS" else C.BRED)
+    dash.add_insight("pyuvm: UVM-1800.2 components running on cocotb — scoreboard, coverage, constrained-random.", "good")
+    dash.add_insight("NONCOMP ops checked with exact bit-level oracle; FMA/DIVSQRT/CVT use structural NaN/Inf checks.", "good")
+    dash.add_insight("Add sfpy (softfloat Python bindings) for bit-accurate FMA/DIVSQRT mantissa verification.", "improve")
+    dash.add_insight("Extend FPURandomSeq with pyvsc constraints for weighted coverage-driven generation.", "improve")
+    dash.print()
+
+    if summary.failed > 0 or summary.errors > 0:
+        return "FAIL"
+    if summary.total == 0:
+        return "SKIP"
+    return "PASS"
+
+
 def run(flow) -> str:
     print(f"\n  {C.hdr('━━━ PILLAR 3: Functional')}  {PILLAR_ICONS[2]}  {C.dim(flow.top)}")
     rtl_files  = flow._find_all_rtl()
@@ -69,7 +117,9 @@ def run(flow) -> str:
     if not test_files and vlog_tb:
         return _run_vlog_tb(flow, vlog_tb, rtl_files)
 
-    deps = rtl_files + test_files
+    uvm_test_files = sorted((flow.verif_dir / "uvm" / "tests").glob("test_*.py")) \
+        if (flow.verif_dir / "uvm" / "tests").is_dir() else []
+    deps = rtl_files + test_files + uvm_test_files
     if flow.is_checkpoint_valid("functional", deps):
         print(f"     {C.ok('✓ Skipped')} {C.dim('(no changes since last test run)')}")
         return "PASS"
@@ -162,4 +212,11 @@ def run(flow) -> str:
 
     flow.update_checkpoint("functional", deps)
     print(f"  {C.ok('✓ Functional PASS')}  {C.dim(f'log → {log_file.name}')}")
+
+    # ── pyuvm tier (optional — runs in addition to cocotb directed tests) ──
+    uvm_status = _run_uvm(flow)
+    if uvm_status == "FAIL":
+        print(f"  {C.err('❌ UVM FAIL')} — pyuvm scoreboard found mismatches")
+        return "FAIL"
+
     return "PASS"

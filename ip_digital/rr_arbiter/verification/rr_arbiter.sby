@@ -1,0 +1,16 @@
+[options]
+# Safety properties (F1-F4) are inductive — depth 15 gives z3 enough unrolling
+# to prove the burst_atomic temporal property and the pointer invariant.
+# Cover mode (run automatically by p2_formal.py) checks every requester is reachable.
+mode prove
+depth 15
+
+[engines]
+smtbmc --stbv z3
+
+[script]
+read -formal rr_arbiter.sv
+prep -top rr_arbiter
+
+[files]
+../rtl/rr_arbiter.sv

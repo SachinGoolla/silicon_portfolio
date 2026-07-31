@@ -24,9 +24,13 @@ def run(flow, threshold: int = 0, toggle_threshold: int = 0) -> str:
         print(f"     {C.warn('⚠ verilator_coverage failed:')} {e}")
         return "WARN"
 
-    # Verilator annotated format: "NNNNNN <code>" or "       <code>" (spaces = not executable)
-    # Tilde prefix (~) means "constant" (uncoverable) — skip those.
-    # Zero count = coverable but never executed.
+    # Verilator --annotate format: "[%~ ]NNNNNN  <code>" where NNNNNN is a 6-digit zero-padded hit count.
+    #   " NNNNNN  <code>"  — executable line; count = times hit
+    #   "%NNNNNN  <code>"  — conditional coverage (ports/interfaces); count = times hit
+    #   "~NNNNNN  <code>"  — constant expression (structurally uncoverable) — skip
+    #   "         <code>"  — non-executable (comments, blank, declarations) — skip
+    # A line is UNCOVERED iff count == 0 (all six zeros) AND prefix != '~'.
+    _ANNO_RE = re.compile(r'^([%~ ]?)(\d{6})\s+(.+)')
     uncovered = []
     total_lines = 0
     for f in list(anno_dir.rglob("*.sv")) + list(anno_dir.rglob("*.v")):
@@ -34,19 +38,28 @@ def run(flow, threshold: int = 0, toggle_threshold: int = 0) -> str:
         if flow.verif_dir.name in str(f) or 'tb_' in f.name:
             continue
         lines = f.read_text(errors='replace').splitlines()
+        # Collect all coverable lines for this file first so we can detect
+        # uninstantiated modules (compiled by Verilator but never in the DUT
+        # hierarchy — every coverable line has count=0).
+        file_rows = []
         for i, line in enumerate(lines):
-            m_cov = re.match(r'^\s*([0~]\d*)\s+(.+)', line)   # zero or tilde-prefixed = uncoverable/zero
-            m_hit = re.match(r'^\s*([1-9]\d*)\s+(.+)', line)  # nonzero count = covered
-            if m_cov:
-                count_str = m_cov.group(1)
-                code = m_cov.group(2).strip()
-                if count_str.startswith('~'):
-                    continue  # constant — not a coverable line
-                if code and not code.startswith('//') and not code.startswith('/*'):
-                    uncovered.append((f.name, i + 1, code))
-                    total_lines += 1
-            elif m_hit:
-                total_lines += 1
+            m = _ANNO_RE.match(line)
+            if not m:
+                continue
+            prefix, count_str, code = m.group(1), m.group(2), m.group(3).strip()
+            if prefix == '~':
+                continue  # constant expression — structurally uncoverable
+            if not code or code.startswith('//') or code.startswith('/*'):
+                continue
+            file_rows.append((i + 1, int(count_str), code))
+        # Skip uninstantiated modules: if every coverable line is zero the
+        # module was compiled but never placed in the design hierarchy.
+        if file_rows and all(cnt == 0 for _, cnt, _ in file_rows):
+            continue
+        for lineno, cnt, code in file_rows:
+            total_lines += 1
+            if cnt == 0:
+                uncovered.append((f.name, lineno, code))
 
     flow.all_metrics.coverage.uncovered_lines      = uncovered[:20]
     flow.all_metrics.coverage.total_lines_analyzed = total_lines
@@ -80,11 +93,34 @@ def run(flow, threshold: int = 0, toggle_threshold: int = 0) -> str:
             toggle_pct = round(toggle_covered / toggle_total * 100, 1)
     flow.all_metrics.coverage.toggle_coverage_pct = toggle_pct
 
+    # Parse expression/branch coverage from v_expr entries (requires --coverage-expr in P4)
+    expr_pct = None  # None = not collected (--coverage-expr not used)
+    if cov_dat.exists():
+        expr_total = expr_covered = 0
+        for line in cov_dat.read_text(errors='replace').splitlines():
+            if 'v_expr' not in line:
+                continue
+            if flow.verif_dir.name in line or '/verification/' in line:
+                continue
+            expr_total += 1
+            m = re.search(r"'\s+(\d+)\s*$", line)
+            if m and int(m.group(1)) > 0:
+                expr_covered += 1
+        if expr_total > 0:
+            expr_pct = round(expr_covered / expr_total * 100, 1)
+    if expr_pct is not None:
+        flow.all_metrics.coverage.branch_coverage_pct = expr_pct
+
     dash = Dashboard("COVERAGE — Verilator", C.BYELLOW)
     dash.add_metric("Line Coverage",    f"{pct}%",
                     value_color=C.BGREEN if pct == 100 else (C.BYELLOW if pct >= 80 else C.BRED))
     dash.add_metric("Toggle Coverage",  f"{toggle_pct}%",
                     value_color=C.BGREEN if toggle_pct == 100 else (C.BYELLOW if toggle_pct >= 80 else C.BRED))
+    if expr_pct is not None:
+        dash.add_metric("Expr Coverage",  f"{expr_pct}%",
+                        value_color=C.BGREEN if expr_pct == 100 else (C.BYELLOW if expr_pct >= 80 else C.BRED))
+    else:
+        dash.add_metric("Branch/Expr",  "N/A — add --coverage-expr to P4 to enable")
     dash.add_metric("Uncovered Lines",  n_uncov,
                     value_color=C.BRED if n_uncov > 0 else C.BGREEN)
     dash.add_metric("Total Lines",      total_lines)
