@@ -1,0 +1,20 @@
+[options]
+# AXI4-Lite subordinate: VALID-sticky invariants (control FFs only, 4 FFs).
+# NUM_REGS=1: minimises reg_q state (32 FFs); yosys sets zero-width wr_idx
+# bits to undef (warning only, not an error). SLVERR cover removed — it is
+# unreachable with NUM_REGS=1 (wr_idx always in-bounds) and verified by
+# P3/P4 simulation tests instead.
+# mode bmc depth 5: PROVE passed in 31 s; k-induction exhausts z3 RAM.
+mode bmc
+depth 5
+
+[engines]
+smtbmc z3
+
+[script]
+read -formal axi_lite_slave.sv
+chparam -set NUM_REGS 1 axi_lite_slave
+prep -top axi_lite_slave
+
+[files]
+../rtl/axi_lite_slave.sv

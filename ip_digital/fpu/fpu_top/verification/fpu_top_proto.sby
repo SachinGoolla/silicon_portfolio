@@ -1,8 +1,8 @@
 [options]
 # fpu_top protocol invariants: ready_o = ~busy_o (combinational tautology)
-# smtbmc z3 (no --stbv): uses SMT arrays instead of bitvectors; handles 767 FFs.
-# smtbmc --stbv z3 OOMs on this design; abc pdr has a sby v0.64 Python bug.
-mode bmc
+# smtbmc z3 (no --stbv): per-signal BitVec encoding; tractable for 767 FFs.
+# smtbmc --stbv z3 OOMs (packed state BV); abc pdr has a sby v0.64 Python bug.
+mode prove
 depth 10
 
 [engines]
