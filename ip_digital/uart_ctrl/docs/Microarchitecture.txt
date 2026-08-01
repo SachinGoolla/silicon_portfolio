@@ -1,0 +1,148 @@
+================================================================================
+MICROARCHITECTURE — uart_ctrl  (APB UART Peripheral)
+================================================================================
+Author: dada  |  PDK target: sky130  |  Freq target: 80 MHz (same as fpu_top)
+Standard: UART (8N1 default) + APB3 slave interface
+
+================================================================================
+1. BLOCK DIAGRAM
+================================================================================
+
+         ┌─────────────────────────────────────────────────────────────┐
+         │                        uart_ctrl                            │
+         │                                                             │
+ APB3 ───┤─► APB slave decode ──► Register file                       │
+  bus    │                          │       │                         │
+         │                          ▼       ▼                         │
+         │                       CTRL    BRDIV ──► uart_baud          │
+         │                                           │ baud16_tick    │
+         │                                    ┌──────┴──────┐         │
+         │   TDR ──push──► TX FIFO ──pop────► uart_tx ────► uart_tx ──┤──► pad
+         │   RDR ◄─pop───  RX FIFO ◄─push──  uart_rx ◄──── rx_in     │
+         │                                       ▲                     │
+         │   SR ◄── {tx_full, tx_empty,          │  (loopback mux)    │
+         │            rx_full, rx_empty,          └──── uart_tx        │
+         │            frame_err, par_err,                              │
+         │            ovr_err}               ┌── 2-FF sync ◄── pad ───┤◄── uart_rx
+         │   IER, irq_o                      └──► rx_in               │
+         └─────────────────────────────────────────────────────────────┘
+
+================================================================================
+2. PIPELINE / DATAFLOW
+================================================================================
+
+TX path:
+  APB write to TDR (0x08)
+    → push_en & !tx_full → TX FIFO (sync, FIFO_DEPTH entries)
+    → uart_tx pops one entry per IDLE→START transition (baud16_tick gated)
+    → TX FSM: IDLE→START(16t)→DATA×8(16t each)→[PARITY(16t)]→STOP(16t)→IDLE
+    → uart_tx pad (idle high)
+
+RX path:
+  uart_rx pad
+    → 2-FF synchroniser (2-cycle metastability guard)
+    → loopback mux (rx_in = loopback ? uart_tx_int : rx_sync[1])
+    → RX FSM: IDLE→START(8t mid-bit check)→DATA×8(16t each)→[PARITY]→STOP
+    → if valid: rx_push → RX FIFO
+    → else: frame_err_p / parity_err_p / ovr_err_p pulse (latched in SR)
+  APB read of RDR (0x0C) → pop RX FIFO, return head byte
+
+Baud generation:
+  uart_baud: counter counts 0..BRDIV, emits 1-cycle baud16_tick on wrap.
+  BRDIV = CLK_FREQ / (BAUD_RATE × 16) − 1  (runtime-programmable via BRDIV reg)
+  Default: CLK_FREQ=50MHz, BAUD_RATE=115200 → BRDIV=26
+
+================================================================================
+3. REGISTER MAP  (PADDR[4:2] = word-select, all 32-bit APB words)
+================================================================================
+
+  Offset  Name   Acc   Bits
+  0x00    CTRL   RW    [5]=LOOPBACK [4]=PARITY_ODD [3]=PARITY_EN
+                       [2]=RX_EN    [1]=TX_EN       [0]=EN
+                       Reset: 0x06 (TX_EN + RX_EN asserted; EN=0)
+  0x04    BRDIV  RW    [15:0] baud-rate divisor  Reset: CLK_FREQ/(BAUD×16)−1
+  0x08    TDR    WO    [7:0]  TX data  (write pushes byte to TX FIFO; read=0)
+  0x0C    RDR    RO    [7:0]  RX data  (read pops byte from RX FIFO)
+  0x10    SR     RW1C  [6]=OVR_ERR [5]=PAR_ERR [4]=FRAME_ERR (write-1-to-clear)
+                       [3]=RX_EMPTY [2]=RX_FULL [1]=TX_EMPTY [0]=TX_FULL (RO)
+  0x14    IER    RW    [2]=ERR_IE [1]=RX_NE_IE [0]=TX_EMPTY_IE
+
+================================================================================
+4. APB SLAVE TIMING  (0 wait states)
+================================================================================
+
+  SETUP  phase: PSEL=1, PENABLE=0
+    → PRDATA registered from register file (wide mux result captured in FF)
+    → No write occurs
+
+  ACCESS phase: PSEL=1, PENABLE=1
+    → PREADY=1 (combinatorial, always)
+    → Writes: register file updated (CTRL/BRDIV/IER/SR-clear)
+    → Reads: PRDATA already valid (registered previous cycle)
+
+  Critical timing note: PRDATA register eliminates the wide-mux → output pad
+  path.  The remaining path (PADDR mux select → register D-input) closes
+  comfortably at 80 MHz on sky130 TT corner.
+
+================================================================================
+5. LOOPBACK MODE  (CTRL[5]=1)
+================================================================================
+
+  rx_in = uart_tx_int (internal, before pad)
+  uart_rx pad is ignored.
+  uart_tx pad is still driven (observable on external logic analyser).
+  Used for self-test: write to TDR → data exits uart_tx → re-enters uart_rx →
+  lands in RX FIFO → readable from RDR.
+
+================================================================================
+6. INTERRUPT ARCHITECTURE
+================================================================================
+
+  irq_o is LEVEL-SENSITIVE (deasserts automatically when source clears):
+
+    irq_o = (TX_EMPTY & IER[0]) |
+            (!RX_EMPTY & IER[1]) |
+            (|{OVR_ERR,PAR_ERR,FRAME_ERR} & IER[2])
+
+  Software flow:
+    1. Write IER to enable sources.
+    2. On irq_o assertion, read SR to identify source.
+    3. For error flags: write 1 to SR[6:4] to clear (RW1C).
+    4. Read RDR to drain RX (clears !RX_EMPTY source).
+    5. irq_o deasserts automatically.
+
+================================================================================
+7. FORMAL PROPERTIES  (P2 — SymbiYosys / Z3)
+================================================================================
+
+  F1: PREADY only when PENABLE high    (APB protocol)
+  F2: No register write in SETUP phase (PENABLE=0)
+  F3: TX idles high (uart_tx=1 when TX FSM in IDLE state)
+  F4: TX FSM state encoding valid (no illegal enum value)
+  F5: RX FSM state encoding valid
+  F6: Loopback wiring: rx_in == uart_tx_int when CTRL[5]=1
+  F7: TX FIFO never pushed when full
+  Cover: complete TX frame traversal (IDLE→START→DATA→STOP→IDLE)
+
+================================================================================
+8. PARAMETER TABLE
+================================================================================
+
+  Parameter    Default    Range           Notes
+  CLK_FREQ     50_000_000 any             System clock frequency (Hz)
+  BAUD_RATE    115_200    any             Desired baud rate
+  FIFO_DEPTH   16         power-of-2      TX and RX FIFO depth
+  PARITY_EN    0          0 or 1          Synthesised: 0=none, 1=even/odd
+
+  Runtime-only (via register):
+  CTRL[3]=PARITY_EN  runtime enable (requires synthesis PARITY_EN=1)
+  CTRL[4]=PARITY_ODD 0=even, 1=odd parity
+
+================================================================================
+9. AREA / TIMING ESTIMATES (sky130, Yosys synth, pre-layout)
+================================================================================
+
+  Estimated cell count: ~350–450 (TX+RX FSMs + 2×FIFO + baud + APB reg)
+  Target: TT WNS ≥ 0 ns at 80 MHz
+  SS: advisory (pre-layout pessimism)
+  GLS: should PASS (no parameters in synth netlist; verified by P8)

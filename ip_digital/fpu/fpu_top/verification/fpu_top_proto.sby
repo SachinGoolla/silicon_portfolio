@@ -1,12 +1,12 @@
 [options]
-# fpu_top protocol invariants: ready_o = ~busy_o
-# BMC depth=5 covers FMA pipeline (4 stages) + CVT (2 stages).
-# mode prove (k-induction) OOMs z3 on 767-FF design at any tractable depth.
+# fpu_top protocol invariants: ready_o = ~busy_o (combinational tautology)
+# smtbmc z3 (no --stbv): uses SMT arrays instead of bitvectors; handles 767 FFs.
+# smtbmc --stbv z3 OOMs on this design; abc pdr has a sby v0.64 Python bug.
 mode bmc
-depth 5
+depth 10
 
 [engines]
-smtbmc --stbv z3
+smtbmc z3
 
 [script]
 read -formal fpu_round.sv

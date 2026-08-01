@@ -218,26 +218,26 @@ module fpu_noncomp #(
     //
     // RISC-V ISA Manual §11.2 defines bit positions:
     //   Bit 9: quiet NaN          Bit 8: signaling NaN
-    //   Bit 7: negative infinity   Bit 6: negative normal number
-    //   Bit 5: negative subnormal  Bit 4: negative zero
-    //   Bit 3: positive zero       Bit 2: positive subnormal
-    //   Bit 1: positive normal     Bit 0: positive infinity
+    //   Bit 0: negative infinity   Bit 1: negative normal number
+    //   Bit 2: negative subnormal  Bit 3: negative zero
+    //   Bit 4: positive zero       Bit 5: positive subnormal
+    //   Bit 6: positive normal     Bit 7: positive infinity
     //
     // Exactly one bit is set for any valid FP input.
     // =========================================================================
     logic [9:0] fclass_result;
     always_comb begin
         fclass_result = 10'b0;
-        if      (a_is_qnan)              fclass_result[9] = 1'b1;
-        else if (a_is_snan)              fclass_result[8] = 1'b1;
-        else if (a_is_inf  &&  sign_a)   fclass_result[7] = 1'b1;   // -inf
-        else if (a_is_normal && sign_a)  fclass_result[6] = 1'b1;   // -normal
-        else if (a_is_sub  &&  sign_a)   fclass_result[5] = 1'b1;   // -subnormal
-        else if (a_is_zero &&  sign_a)   fclass_result[4] = 1'b1;   // -zero
-        else if (a_is_zero && !sign_a)   fclass_result[3] = 1'b1;   // +zero
-        else if (a_is_sub  && !sign_a)   fclass_result[2] = 1'b1;   // +subnormal
-        else if (a_is_normal && !sign_a) fclass_result[1] = 1'b1;   // +normal
-        else if (a_is_inf  && !sign_a)   fclass_result[0] = 1'b1;   // +infinity
+        if      (a_is_qnan)              fclass_result[9] = 1'b1;   // quiet NaN
+        else if (a_is_snan)              fclass_result[8] = 1'b1;   // signaling NaN
+        else if (a_is_inf  &&  sign_a)   fclass_result[0] = 1'b1;   // -inf
+        else if (a_is_normal && sign_a)  fclass_result[1] = 1'b1;   // -normal
+        else if (a_is_sub  &&  sign_a)   fclass_result[2] = 1'b1;   // -subnormal
+        else if (a_is_zero &&  sign_a)   fclass_result[3] = 1'b1;   // -zero
+        else if (a_is_zero && !sign_a)   fclass_result[4] = 1'b1;   // +zero
+        else if (a_is_sub  && !sign_a)   fclass_result[5] = 1'b1;   // +subnormal
+        else if (a_is_normal && !sign_a) fclass_result[6] = 1'b1;   // +normal
+        else if (a_is_inf  && !sign_a)   fclass_result[7] = 1'b1;   // +infinity
     end
 
     // =========================================================================

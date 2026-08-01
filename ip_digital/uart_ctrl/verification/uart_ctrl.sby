@@ -1,0 +1,23 @@
+[options]
+# TX FSM has depth-15 reachability for full-frame cover.
+# APB protocol and FSM encoding properties are inductive (depth 5).
+mode prove
+depth 15
+
+[engines]
+smtbmc --stbv z3
+
+[script]
+read -formal uart_ctrl.sv
+read -formal uart_fifo.sv
+read -formal uart_baud.sv
+read -formal uart_tx.sv
+read -formal uart_rx.sv
+prep -top uart_ctrl
+
+[files]
+../rtl/uart_ctrl.sv
+../rtl/uart_fifo.sv
+../rtl/uart_baud.sv
+../rtl/uart_tx.sv
+../rtl/uart_rx.sv

@@ -1,0 +1,14 @@
+[options]
+mode prove
+depth 25
+
+[engines]
+smtbmc z3
+
+[script]
+read -formal ../rtl/apb_uart_master.sv
+hierarchy -check -top apb_uart_master
+prep -top apb_uart_master
+
+[files]
+../rtl/apb_uart_master.sv

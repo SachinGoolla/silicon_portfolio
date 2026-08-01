@@ -170,7 +170,7 @@ module fpu_cvt #(
     // Only the barrel-shift + round path remains here — no LZC on critical path.
     // =========================================================================
     /* verilator lint_off UNUSEDSIGNAL */
-    logic [31:0] i2f_shifted;   // [31:23] unused: only frac[22:0] needed
+    logic [23:0] i2f_shifted;   // bit[23]=leading 1 (structurally always 1 post-shift); frac=[22:0]
     /* verilator lint_on UNUSEDSIGNAL */
     logic [7:0]  i2f_exp;
     logic [22:0] i2f_frac;
@@ -181,7 +181,7 @@ module fpu_cvt #(
 
     always_comb begin
         i2f_gpos     = 5'd0;
-        i2f_shifted  = 32'h0;
+        i2f_shifted  = 24'h0;
         i2f_exp      = 8'h0;
         i2f_frac     = 23'h0;
         i2f_guard    = 1'b0;
@@ -196,7 +196,7 @@ module fpu_cvt #(
             i2f_exp = 8'(p1_i2f_msb) + 8'd127;
 
             if (p1_i2f_msb >= 5'd23) begin
-                i2f_shifted = p1_i2f_mag >> (p1_i2f_msb - 5'd23);
+                i2f_shifted = 24'(p1_i2f_mag >> (p1_i2f_msb - 5'd23));
                 i2f_frac    = i2f_shifted[22:0];
                 if (p1_i2f_msb >= 5'd24) begin
                     i2f_gpos   = p1_i2f_msb - 5'd24;
@@ -206,7 +206,7 @@ module fpu_cvt #(
                                  |(p1_i2f_mag & ((32'h1 << (i2f_gpos - 5'd1)) - 32'h1)) : 1'b0;
                 end
             end else begin
-                i2f_shifted = p1_i2f_mag << (5'd23 - p1_i2f_msb);
+                i2f_shifted = 24'(p1_i2f_mag << (5'd23 - p1_i2f_msb));
                 i2f_frac    = i2f_shifted[22:0];
             end
 

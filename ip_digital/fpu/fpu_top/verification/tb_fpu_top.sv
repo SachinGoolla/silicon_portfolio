@@ -16,6 +16,7 @@
 //   pillar --top fpu_top --ip-path ip_digital/alu/fpu_top --step functional
 //
 // =============================================================================
+`timescale 1ns/1ps
 
 module tb_fpu_top;
 

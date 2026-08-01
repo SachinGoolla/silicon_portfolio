@@ -1,0 +1,9 @@
+## apb_uart_master.upf — single-domain power intent (always-on)
+create_power_domain PD_TOP -include_scope
+create_supply_net  VDD -domain PD_TOP
+create_supply_net  VSS -domain PD_TOP
+create_supply_port VDD -direction in -domain PD_TOP
+create_supply_port VSS -direction in -domain PD_TOP
+connect_supply_net VDD -ports {VDD}
+connect_supply_net VSS -ports {VSS}
+set_domain_supply_net PD_TOP -primary_power_net VDD -primary_ground_net VSS

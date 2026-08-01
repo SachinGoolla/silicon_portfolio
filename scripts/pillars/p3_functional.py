@@ -146,6 +146,8 @@ def run(flow) -> str:
     makefiles_path = flow.run_capture(f"{cocotb_cfg} --makefiles").stdout.strip()
     all_rtl_str    = " ".join(str(f) for f in flow._find_all_rtl())
     test_modules   = " ".join(t.stem for t in test_files)
+    sim_args_file  = flow.verif_dir / "cocotb_sim.mk"
+    extra_include  = f"include {sim_args_file}\n" if sim_args_file.exists() else ""
     makefile       = cocotb_build / "Makefile"
     makefile.write_text(
         f"SIM ?= icarus\n"
@@ -155,6 +157,7 @@ def run(flow) -> str:
         f"COCOTB_TEST_MODULES = {test_modules}\n"
         f"COCOTB_RESULTS_FILE = {results_xml}\n"
         f"SIM_BUILD = {cocotb_build}/sim_build\n"
+        f"{extra_include}"
         f"include {makefiles_path}/Makefile.sim\n"
     )
 

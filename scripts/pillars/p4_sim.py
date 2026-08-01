@@ -42,6 +42,7 @@ def run(flow) -> str:
 
     # RTL parameter overrides: --params KEY=VAL → Verilator -GKEY=VAL
     param_flags = " ".join(f"-G{k}={v}" for k, v in flow.params.items())
+    log_file.write_text("")  # truncate so SimLogParser only sees this run's output
     compile_cmd = (
         f"verilator --binary --assert --coverage --coverage-toggle --coverage-expr --trace-fst --timing {sv_flag} "
         f"-y {flow.src_dir} --Mdir {obj_dir} --top-module tb_{flow.top} "
