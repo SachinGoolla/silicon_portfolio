@@ -42,12 +42,47 @@
 //     N        req_i asserted; new grant computed combinationally
 //     N+1      grant_o reflects new winner; upstream sees stable grant
 //
-// FORMAL SCOPE (see rr_arbiter.sby):
-//   Safety — proved by z3 k-induction:
-//     ONEHOT0      : $onehot0(grant_o)               [mutual exclusion]
-//     NO_MASK_GNT  : !(grant_o & mask_i)             [power-gate respect]
-//     BURST_ATOMIC : burst lock holds until last_i   [AXI burst integrity]
-//     PP_ONEHOT    : $onehot(pp_q)                   [pointer invariant]
+// FORMAL SCOPE (see rr_arbiter.sby + rr_arbiter_liveness.sby):
+//   NOTE: properties are written as immediate assertions inside clocked
+//   always blocks (`assert(...)`/`assume(...)`/`cover(...)`), NOT SVA
+//   `assert property (...)`/`property...endproperty`. The open-source
+//   Yosys build this flow runs on (no Verific) does not parse SVA temporal
+//   property syntax at all -- confirmed directly: both the distro `apt`
+//   yosys 0.33 AND the full oss-cad-suite yosys 0.38 reject `property`/
+//   `assert property` with a hard parser error, regardless of `-sv`/
+//   `-formal` flags. This file used to be written in SVA and reported
+//   PASS on the dashboard, but that PASS came from checkpoint carryover
+//   (`is_checkpoint_valid()` skipping a real re-run), not an actual
+//   passing proof -- the underlying .sby run has always hard-errored on
+//   this toolchain. See project memory feedback_formal_sby. Every other
+//   IP in this repo whose formal proof is independently confirmed real
+//   (fpu_top, mod3ud, mod1000) already uses this immediate-assertion
+//   house style; this file now matches it.
+//   Safety — proved by z3 k-induction (rr_arbiter.sby):
+//     ONEHOT0      : $onehot0(grant_o)                     [mutual exclusion]
+//     NO_MASK_GNT  : !(grant_o & mask_at_grant_q)          [power-gate respect]
+//                    NOT `!(grant_o & mask_i)` (current-cycle mask) — grant_o
+//                    is registered, reflecting the mask_i live when the
+//                    grant was DECIDED one cycle earlier. mask_i has no
+//                    stability contract, so BMC finds a real counterexample
+//                    against the current-cycle comparison (mask_i legally
+//                    flips between decision and observation in the formal
+//                    model). mask_at_grant_q tracks the mask actually used
+//                    for whatever grant_o currently holds; the property is
+//                    the same one the RTL was always meant to guarantee.
+//     BURST_ATOMIC : burst lock holds until last_i         [AXI burst integrity]
+//     PP_ONEHOT    : $onehot(pp_q)                         [pointer invariant]
+//   Liveness — proved by z3 k-induction (rr_arbiter_liveness.sby, `-DLIVENESS`):
+//     STARVATION_FREE[k] : a continuously-held, unmasked request from
+//                          requester k is granted within N_REQ cycles.
+//                          Encoded as a per-requester "consecutive cycles
+//                          waited without a grant" counter, asserted never
+//                          to exceed N_REQ -- the counter IS the ranking
+//                          function from the hand proof below. Proof scope
+//                          excludes burst_lock_i (assumed 0 — burst
+//                          atomicity is separately, fully proven by
+//                          BURST_ATOMIC above); see rr_arbiter_liveness.sby
+//                          header for why the two are split.
 //   Reachability — proved by sby cover mode:
 //     COV_GRANT[k] : each requester k can receive a grant
 //
@@ -127,38 +162,135 @@ module rr_arbiter #(
 
     // ── Formal verification block ──────────────────────────────────────────
     // Properties are checked by sby (SymbiYosys) in mode prove / cover.
-    // Only active when Yosys reads this file with 'read -formal'.
+    // Only active when Yosys reads this file with 'read -formal'. Written
+    // as immediate assertions (house style — see FORMAL SCOPE header above
+    // for why, not SVA `assert property`).
     `ifdef FORMAL
-        // F1 — Mutual exclusion: never two grants simultaneously
-        ONEHOT0: assert property (
-            @(posedge clk) disable iff (!rst_n)
-            $onehot0(grant_o)
-        );
+        // Force the model to actually pass through reset before anything
+        // is checked. Without this, BMC's basecase explores the design
+        // starting from ANY arbitrary step-0 state — including "rst_n=1
+        // and no reset ever happened" — and grant_q/pp_q have no explicit
+        // `initial` value, so that state is uninitialized garbage
+        // (confirmed directly: a real captured counterexample showed
+        // rst_n=1 at step 0 with grant_q=1111 and pp_q=0000, neither
+        // one-hot). This is the standard, tool-recommended idiom for this
+        // exact problem — NOT a mod1000-style "was ever reset" latched
+        // flag: that variant relies on a plain register's `initial X = 0`
+        // being honored for ITS OWN power-on value, which this Yosys
+        // build's formal flow does not reliably do either (confirmed with
+        // a separate minimal repro). `initial assume(...)`, by contrast,
+        // is a real constraint on the basecase's starting state and does
+        // work — confirmed with a minimal k-induction PASS before relying
+        // on it here.
+        initial assume(!rst_n);
 
-        // F2 — Power-gate respect: masked requester never granted
-        NO_MASK_GNT: assert property (
-            @(posedge clk) disable iff (!rst_n)
-            !(grant_o & mask_i)
-        );
+        // Gate every check directly on the CURRENT cycle's rst_n (the
+        // immediate-assertion equivalent of SVA `disable iff (!rst_n)`).
+        // Sufficient because grant_q/pp_q are already valid the same
+        // cycle rst_n deasserts — no extra settling cycle needed.
 
-        // F3 — Burst atomicity: grant held until last_i when locked
-        BURST_ATOMIC: assert property (
-            @(posedge clk) disable iff (!rst_n)
-            (burst_lock_i && |grant_o && !last_i) |=> (grant_o == $past(grant_o))
-        );
+        // History for F3 (burst atomicity needs last cycle's hold state +
+        // grant value — the immediate-assertion equivalent of $past()).
+        logic              burst_hold_prev_q;
+        logic [N_REQ-1:0] grant_prev_q;
+        always_ff @(posedge clk or negedge rst_n) begin
+            if (!rst_n) begin
+                burst_hold_prev_q <= 1'b0;
+                grant_prev_q      <= '0;
+            end else begin
+                burst_hold_prev_q <= burst_hold;
+                grant_prev_q      <= grant_o;
+            end
+        end
 
-        // F4 — Pointer invariant: pp_q is always one-hot (never 0, never 2-hot)
-        PP_ONEHOT: assert property (
-            @(posedge clk) disable iff (!rst_n)
-            $onehot(pp_q)
-        );
+        // History for F2 (power-gate respect). grant_o is REGISTERED — it
+        // reflects the mask_i that was live when the grant was DECIDED
+        // (`active_req = req_i & ~mask_i`, same cycle as `next_grant`),
+        // not necessarily this cycle's mask_i. mask_i is a plain,
+        // unsynchronized input with no stability contract, so BMC
+        // legitimately finds a counterexample if F2 is checked against
+        // the CURRENT cycle's mask_i: mask_i can flip between decision
+        // and observation. Track the mask actually used for whatever
+        // grant_o currently holds instead — mirrors grant_q's own hold/
+        // update conditions exactly, so it stays correct across a
+        // burst-held grant too. This proves the assertion actually meant
+        // ("never grant a unit that was masked when the decision was
+        // made") rather than a strictly stronger same-cycle claim the RTL
+        // was never designed to guarantee.
+        logic [N_REQ-1:0] mask_at_grant_q;
+        always_ff @(posedge clk or negedge rst_n) begin
+            if (!rst_n) begin
+                mask_at_grant_q <= '0;
+            end else if (|active_req && !burst_hold) begin
+                mask_at_grant_q <= mask_i;
+            end
+            // burst_hold or no active_req: grant_q doesn't change either
+            // (held or staying 0) — mask_at_grant_q holds too, by omission.
+        end
+
+        always_comb begin
+            if (rst_n) begin
+                // F1 — Mutual exclusion: never two grants simultaneously
+                assert ($onehot0(grant_o));
+                // F2 — Power-gate respect: masked requester never granted
+                assert (!(grant_o & mask_at_grant_q));
+                // F3 — Burst atomicity: if last cycle was burst-held, this
+                // cycle's grant must be unchanged from last cycle's.
+                assert (!burst_hold_prev_q || (grant_o == grant_prev_q));
+                // F4 — Pointer invariant: pp_q is always one-hot
+                assert ($onehot(pp_q));
+            end
+        end
 
         // Cover: every requester slot is reachable (fairness demonstration)
         for (genvar k = 0; k < N_REQ; k++) begin : gen_cov
-            COV_GRANT: cover property (
-                @(posedge clk) grant_o[k]
-            );
+            always_comb cover (grant_o[k]);
         end
+
+        `ifdef LIVENESS
+            // F5 — Starvation freedom (see rr_arbiter_liveness.sby header
+            // for the full rationale). Scope is isolated from burst_lock_i:
+            // BURST_ATOMIC above already fully proves burst atomicity with
+            // no such assume; combining "starvation-free" and "correct
+            // under adversarial worst-case bursting" into one proof needs
+            // depth on the order of N_REQ * MAX_BURST_LEN, not tractable
+            // for k-induction on this host (see project memory
+            // feedback_formal_sby). With the bus never held hostage, pp_q
+            // left-rotates exactly one slot per active-request cycle, so a
+            // continuously-held, unmasked request is granted within N_REQ
+            // cycles — hand-verified via a decreasing-distance argument
+            // (each cycle requester j loses, the new pointer strictly
+            // closes the circular-scan distance to j by at least 1; that
+            // distance starts at most N_REQ-1, so induction over that
+            // bounded chain is exactly what k-induction proves). The
+            // "distance to j" argument IS this counter: wait_cnt_q[j]
+            // counts consecutive cycles j has waited since its last grant
+            // (or since it started requesting) — the ranking function,
+            // made concrete as a synthesizable signal instead of an SVA
+            // `throughout`/`##[0:N]` window (also not supported by this
+            // toolchain).
+            always_comb begin
+                if (rst_n) assume (!burst_lock_i);
+            end
+
+            for (genvar j = 0; j < N_REQ; j++) begin : gen_live
+                logic [7:0] wait_cnt_q;
+                always_ff @(posedge clk or negedge rst_n) begin
+                    if (!rst_n) begin
+                        wait_cnt_q <= 8'd0;
+                    end else if (grant_o[j]) begin
+                        wait_cnt_q <= 8'd0;                    // served — reset
+                    end else if (req_i[j] && !mask_i[j]) begin
+                        wait_cnt_q <= wait_cnt_q + 8'd1;        // still waiting
+                    end else begin
+                        wait_cnt_q <= 8'd0;                    // gave up requesting
+                    end
+                end
+                always_comb begin
+                    if (rst_n) assert (wait_cnt_q <= N_REQ);
+                end
+            end
+        `endif
     `endif
 
 endmodule

@@ -319,47 +319,78 @@ module apb_uart_master #(
     // =========================================================================
     // Formal verification properties
     // =========================================================================
+    // Written as immediate assertions (`assert(...)`/`assume(...)`/`cover(...)`
+    // inside clocked always blocks), NOT SVA `assert property (...)`. The
+    // open-source Yosys build this flow runs on (no Verific) does not parse
+    // SVA temporal syntax — nor the `inside` operator — at all, confirmed
+    // directly: this file used to be written in SVA and showed PASS on the
+    // dashboard, but that PASS was checkpoint carryover, not a real proof;
+    // the underlying .sby run always hard-errored. See rr_arbiter.sv's
+    // FORMAL SCOPE header (fixed first) and project memory
+    // feedback_formal_sby for the full story.
     `ifdef FORMAL
-        // F1 — APB phase ordering: PENABLE requires PSEL
-        APB_PHASE: assert property (
-            @(posedge clk) disable iff (!rst_n)
-            PENABLE |-> PSEL
-        );
+        // Force BMC's basecase through an actual reset before anything is
+        // checked — apb_q/seq_q/txf_wr_q/etc. have no `initial` value, so
+        // without this, BMC can explore "reset never happened" as a valid
+        // step-0 state. `initial assume(...)` is the idiom that reliably
+        // constrains the basecase on this toolchain; a latched
+        // "was-ever-reset" flag relying on a plain register's `initial
+        // X=const` is NOT reliable here (confirmed separately on rr_arbiter).
+        initial assume(!rst_n);
 
-        // F2 — APB3 address and write-enable stable through the ACCESS phase
-        APB_STABLE_ADDR: assert property (
-            @(posedge clk) disable iff (!rst_n)
-            (apb_q == APB_ACCESS) |-> (PADDR == $past(PADDR))
-        );
+        // $past() equivalents — plain one-cycle-delayed shadow registers.
+        logic [4:0] padr_prev_q;
+        logic       pwrite_prev_q;
+        logic       init_done_prev_q;
+        always_ff @(posedge clk or negedge rst_n) begin
+            if (!rst_n) begin
+                padr_prev_q      <= '0;
+                pwrite_prev_q    <= 1'b0;
+                init_done_prev_q <= 1'b0;
+            end else begin
+                padr_prev_q      <= PADDR;
+                pwrite_prev_q    <= PWRITE;
+                init_done_prev_q <= init_done_o;
+            end
+        end
 
-        APB_STABLE_WRITE: assert property (
-            @(posedge clk) disable iff (!rst_n)
-            (apb_q == APB_ACCESS) |-> (PWRITE == $past(PWRITE))
-        );
+        always_comb begin
+            if (rst_n) begin
+                // F1 — APB phase ordering: PENABLE requires PSEL
+                assert (!PENABLE || PSEL);
 
-        // F3 — Only legal uart_ctrl addresses ever asserted on PADDR
-        APB_LEGAL_ADDR: assert property (
-            @(posedge clk) disable iff (!rst_n)
-            PSEL |-> (PADDR inside {A_CTRL, A_BRDIV, A_TDR, A_RDR, A_SR, A_IER})
-        );
+                // F2 — APB3 address and write-enable stable through the
+                // ACCESS phase (compared against last cycle's value, since
+                // this checks continuity across a cycle boundary).
+                assert ((apb_q != APB_ACCESS) || (PADDR   == padr_prev_q));
+                assert ((apb_q != APB_ACCESS) || (PWRITE  == pwrite_prev_q));
 
-        // F4 — init_done_o is sticky: once asserted, never de-asserts
-        INIT_STICKY: assert property (
-            @(posedge clk) disable iff (!rst_n)
-            $rose(init_done_o) |=> init_done_o
-        );
+                // F3 — Only legal uart_ctrl addresses ever asserted on
+                // PADDR. `inside {...}` isn't supported either — spelled
+                // out as an explicit OR of equalities.
+                assert (!PSEL
+                        || (PADDR == A_CTRL)  || (PADDR == A_BRDIV)
+                        || (PADDR == A_TDR)   || (PADDR == A_RDR)
+                        || (PADDR == A_SR)    || (PADDR == A_IER));
 
-        // F5 — TDR write only when TX FIFO has a byte (no spurious writes)
-        TX_WR_VALID: assert property (
-            @(posedge clk) disable iff (!rst_n)
-            (seq_q == SEQ_TX_WR) |-> !txf_empty
-        );
+                // F4 — init_done_o is sticky: once asserted, never
+                // de-asserts. "was 1 last cycle => still 1 this cycle" is
+                // the direct immediate-assertion form of $rose(...)|=>...
+                // — proving it holds every cycle proves stickiness by
+                // induction, without needing an edge-detect at all.
+                assert (!init_done_prev_q || init_done_o);
+
+                // F5 — TDR write only when TX FIFO has a byte (no
+                // spurious writes)
+                assert ((seq_q != SEQ_TX_WR) || !txf_empty);
+            end
+        end
 
         // Reachability covers
-        COV_INIT_DONE: cover property (@(posedge clk)  init_done_o);
-        COV_TX_WR:     cover property (@(posedge clk) (seq_q == SEQ_TX_WR));
-        COV_RX_RD:     cover property (@(posedge clk) (seq_q == SEQ_RX_RD));
-        COV_ZBB:       cover property (@(posedge clk) (apb_q == APB_ACCESS && PREADY && cmd_valid));
+        always_comb cover (init_done_o);
+        always_comb cover (seq_q == SEQ_TX_WR);
+        always_comb cover (seq_q == SEQ_RX_RD);
+        always_comb cover (apb_q == APB_ACCESS && PREADY && cmd_valid);
     `endif
 
 endmodule

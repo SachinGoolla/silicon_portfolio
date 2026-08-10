@@ -1,7 +1,18 @@
 [options]
-# fpu_top protocol invariants: ready_o = ~busy_o (combinational tautology)
-# smtbmc z3 (no --stbv): per-signal BitVec encoding; tractable for 767 FFs.
-# smtbmc --stbv z3 OOMs (packed state BV); abc pdr has a sby v0.64 Python bug.
+# fpu_top protocol invariant: ready_o = ~busy_o (combinational tautology —
+# rtl/fpu_top.sv: `assign busy_o = div_busy; assign ready_o = ~busy_o;`).
+# True for ANY value of div_busy — both sides reduce to `~div_busy` after
+# substitution. It's a pure fact about fpu_top.sv's own wire assignments;
+# no submodule needs to be real to prove it, including fpu_divsqrt (which
+# drives div_busy) — see fpu_top_proto_formal_stub.sv for the full story
+# of how this was narrowed down (state-size reduction got z3 past its old
+# crash point; the final blocker was fpu_divsqrt's own division/sqrt
+# bit-vector arithmetic exhausting 8GB on a single BMC step, unrelated to
+# FF count — division/sqrt logic is a known-hard case for SMT
+# bit-blasting). Every fpu_top submodule is a free (anyseq) stand-in here;
+# only fpu_top.sv itself is real — confirmed BMC depth 10 passes in <1s at
+# this size, so full k-induction (the strictly stronger unbounded proof,
+# genuinely warranted now that it costs nothing) is back on.
 mode prove
 depth 10
 
@@ -9,26 +20,10 @@ depth 10
 smtbmc z3
 
 [script]
-read -formal fpu_round.sv
-read -formal fpu_flags.sv
-read -formal fpu_clk_gate_ctrl.sv
-read -formal fpu_noncomp.sv
-read -formal fpu_fma.sv
-read -formal fpu_cvt.sv
-read -formal fpu_divsqrt.sv
-read -formal fpu_result_mux.sv
-read -formal fpu_operand_iso.sv
+read -formal fpu_top_proto_formal_stub.sv
 read -formal fpu_top.sv
 prep -top fpu_top
 
 [files]
-../rtl/fpu_round.sv
-../rtl/fpu_flags.sv
-../rtl/fpu_clk_gate_ctrl.sv
-../rtl/fpu_noncomp.sv
-../rtl/fpu_fma.sv
-../rtl/fpu_cvt.sv
-../rtl/fpu_divsqrt.sv
-../rtl/fpu_result_mux.sv
-../rtl/fpu_operand_iso.sv
+fpu_top_proto_formal_stub.sv
 ../rtl/fpu_top.sv

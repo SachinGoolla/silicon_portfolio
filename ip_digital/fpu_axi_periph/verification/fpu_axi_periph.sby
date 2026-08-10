@@ -1,0 +1,23 @@
+[options]
+# Formal target: start/done glue FSM safety properties (see fpu_axi_periph.sv
+# `ifdef FORMAL` block). axi_lite_slave and fpu_top are replaced by free
+# (anyseq) stand-ins from fpu_axi_periph_formal_stub.sv for this proof only
+# — both are already signed off standalone by their own P2 formal. A plain
+# blackbox was rejected by the SMT2 backend; pulling in the real fpu_top
+# (767 FFs) timed out at depth 3 BMC after 175s. anyseq keeps this proof to
+# the glue FSM's own state while still letting the solver explore every
+# possible submodule response.
+mode bmc
+depth 5
+
+[engines]
+smtbmc z3
+
+[script]
+read_verilog -sv -D FORMAL fpu_axi_periph.sv
+read_verilog -sv fpu_axi_periph_formal_stub.sv
+prep -top fpu_axi_periph
+
+[files]
+../rtl/fpu_axi_periph.sv
+fpu_axi_periph_formal_stub.sv

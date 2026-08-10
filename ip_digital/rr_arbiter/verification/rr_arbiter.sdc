@@ -10,7 +10,12 @@
 #   The combinational grant-select logic: priority-mask OR + lowest-set-bit
 #   extraction.  For N_REQ=4 this is ~3 gate levels: OR(prio_mask, active_req)
 #   → XOR (isolate LSB) → AND.  Sky130 sky_buf_4 is ~0.3 ns → total ~1 ns.
-#   Ample margin at 12.5 ns.  Scales to N_REQ=16 before timing closure is at risk.
+#
+#   MEASURED (Pillar 8, TT corner): +9.544 ns slack at this period, i.e. real
+#   critical path ~2.96 ns — higher than the ~1 ns hand estimate above (I/O
+#   delay budget + actual cell selection account for the difference), but
+#   still ~76% margin. Ample room at 12.5 ns. Scales to N_REQ=16 before
+#   timing closure is at risk — re-measure, don't re-guess, if you do that.
 #
 # =============================================================================
 

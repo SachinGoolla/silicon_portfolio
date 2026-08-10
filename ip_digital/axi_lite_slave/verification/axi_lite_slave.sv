@@ -63,7 +63,13 @@ module axi_lite_slave #(
 
     // --- HW register interface ---
     output logic [NUM_REGS*DATA_WIDTH-1:0]  regfile_o,  // packed snapshot
-    output logic [NUM_REGS-1:0]             reg_we_o    // write-enable pulse per reg
+    output logic [NUM_REGS-1:0]             reg_we_o,   // write-enable pulse per reg
+
+    // --- HW-sourced register writes (status/result regs updated by the ---
+    // --- owning peripheral, e.g. a compute unit posting a result). ---
+    // --- Takes priority over a same-cycle AXI write to the same index. ---
+    input  logic [NUM_REGS*DATA_WIDTH-1:0]  hw_wdata_i,
+    input  logic [NUM_REGS-1:0]             hw_we_i
 );
 
     // -----------------------------------------------------------------
@@ -147,15 +153,43 @@ module axi_lite_slave #(
         end
     end
 
-    // Register file write — WSTRB byte-lane masking, async reset to 0
+    // Register the HW-write inputs one cycle before use — hw_we_i/hw_wdata_i
+    // can be wide and late-arriving (e.g. NUM_REGS*DATA_WIDTH bits from a
+    // sibling compute unit); driving the reg_q write mux directly from the
+    // primary input closed timing at only ~150 MHz on sky130 TT. The extra
+    // cycle is invisible to a software poller (STATUS/RESULT reads already
+    // take several cycles over AXI).
+    logic [NUM_REGS*DATA_WIDTH-1:0] hw_wdata_q;
+    logic [NUM_REGS-1:0]            hw_we_q;
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            hw_wdata_q <= '0;
+            hw_we_q    <= '0;
+        end else begin
+            hw_wdata_q <= hw_wdata_i;
+            hw_we_q    <= hw_we_i;
+        end
+    end
+
+    // Register file write — WSTRB byte-lane masking, async reset to 0.
+    // HW-sourced writes (hw_we_q) take priority over an AXI write landing on
+    // the same index in the same cycle — both live in this one always_ff so
+    // there is never more than one driver for reg_q[i].
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             for (int i = 0; i < NUM_REGS; i++)
                 reg_q[i] <= '0;
-        end else if (commit && (wr_idx < ADDR_WIDTH'(NUM_REGS))) begin
-            for (int i = 0; i < STRB_W; i++) begin
-                if (w_strb_q[i])
-                    reg_q[wr_idx[IDX_BITS-1:0]][i*8 +: 8] <= w_data_q[i*8 +: 8];
+        end else begin
+            for (int i = 0; i < NUM_REGS; i++)
+                if (hw_we_q[i])
+                    reg_q[i] <= hw_wdata_q[i*DATA_WIDTH +: DATA_WIDTH];
+
+            if (commit && (wr_idx < ADDR_WIDTH'(NUM_REGS)) &&
+                !hw_we_q[wr_idx[IDX_BITS-1:0]]) begin
+                for (int i = 0; i < STRB_W; i++) begin
+                    if (w_strb_q[i])
+                        reg_q[wr_idx[IDX_BITS-1:0]][i*8 +: 8] <= w_data_q[i*8 +: 8];
+                end
             end
         end
     end

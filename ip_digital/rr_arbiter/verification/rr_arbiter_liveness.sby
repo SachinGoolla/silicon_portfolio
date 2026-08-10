@@ -1,0 +1,34 @@
+[options]
+# Starvation-freedom (bounded liveness): a continuously-held, unmasked
+# request is granted within N_REQ cycles. Encoded as a per-requester
+# "consecutive cycles waited" counter (see the `ifdef LIVENESS` block in
+# rr_arbiter.sv) asserted never to exceed N_REQ -- immediate assertions,
+# not SVA `assert property`/`throughout` (this toolchain's open-source
+# Yosys build doesn't parse SVA temporal syntax at all; see rr_arbiter.sv
+# FORMAL SCOPE header). Isolated from burst_lock_i via `assume(!burst_lock_i)`
+# -- proving starvation-freedom AND worst-case burst-hold together needs
+# depth on the order of N_REQ*MAX_BURST_LEN, not tractable for k-induction
+# on this host (see project memory feedback_formal_sby for the OOM
+# history that shaped this call). Burst atomicity itself is separately,
+# fully proven by BURST_ATOMIC in rr_arbiter.sby with no such assume.
+# Together the two files cover: (1) the bus is never held hostage past
+# last_i, and (2) with no hostage-holding, every requester is served
+# within one full pointer rotation.
+# depth 8, not 15 (rr_arbiter.sby's depth): the counter only ranges over
+# N_REQ+1 = 5 states, so k-induction needs far less unrolling than the
+# original SVA `##[0:N_REQ]` window would have -- and a shallower proof is
+# cheaper to run, which matters after the depth-15 attempt crashed z3
+# ("Unexpected EOF response from solver" ~2.5min in; see
+# feedback_formal_sby for the resource-crash pattern this matches).
+mode prove
+depth 8
+
+[engines]
+smtbmc --stbv z3
+
+[script]
+read -formal -DLIVENESS rr_arbiter.sv
+prep -top rr_arbiter
+
+[files]
+../rtl/rr_arbiter.sv

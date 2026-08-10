@@ -37,6 +37,8 @@ async def reset(dut):
     dut.araddr_i.value  = 0
     dut.arprot_i.value  = 0
     dut.rready_i.value  = 0
+    dut.hw_wdata_i.value = 0
+    dut.hw_we_i.value    = 0
     for _ in range(4):
         await RisingEdge(dut.clk)
     dut.rst_n.value = 1

@@ -1,12 +1,22 @@
 [options]
+# depth 25 (original, SVA-era, never actually validated -- that .sby run
+# always hard-errored before this file was fixed) reliably crashed z3
+# ("Unexpected EOF response from solver") at a consistent ~1m45s-2min mark
+# across repeated attempts with plenty of free memory -- a genuine solver
+# resource ceiling for this design's state at that depth, not transient
+# pressure (see project memory feedback_formal_sby for the same signature
+# on fpu_top). Reduced to 10, matching this repo's general convention
+# elsewhere (fpu_top, mod-family) and this design's actual property
+# complexity: F1-F3/F5 are same-cycle or 1-cycle-shadow checks, F4 is a
+# 1-cycle recurrence -- none needs 25 cycles of unrolling to converge.
 mode prove
-depth 25
+depth 10
 
 [engines]
 smtbmc z3
 
 [script]
-read -formal ../rtl/apb_uart_master.sv
+read -formal apb_uart_master.sv
 hierarchy -check -top apb_uart_master
 prep -top apb_uart_master
 

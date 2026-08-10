@@ -43,6 +43,8 @@ module tb_axi_lite_slave;
     logic [1:0]              rresp;
     logic [`NUM_REGS*`DATA_WIDTH-1:0] regfile;
     logic [`NUM_REGS-1:0]    reg_we;
+    logic [`NUM_REGS*`DATA_WIDTH-1:0] hw_wdata;
+    logic [`NUM_REGS-1:0]    hw_we;
 
 `ifdef GLS
     axi_lite_slave dut (
@@ -65,7 +67,8 @@ module tb_axi_lite_slave;
         .araddr_i  (araddr),  .arprot_i  (arprot),
         .rvalid_o  (rvalid),  .rready_i  (rready),
         .rdata_o   (rdata),   .rresp_o   (rresp),
-        .regfile_o (regfile), .reg_we_o  (reg_we)
+        .regfile_o (regfile), .reg_we_o  (reg_we),
+        .hw_wdata_i(hw_wdata), .hw_we_i  (hw_we)
     );
 
     always #5 clk = ~clk;
@@ -158,6 +161,7 @@ module tb_axi_lite_slave;
         bready  = 0;
         arvalid = 0; araddr = '0; arprot = '0;
         rready  = 0;
+        hw_wdata = '0; hw_we = '0;
 
         // Reset
         repeat(4) @(posedge clk);

@@ -2,6 +2,9 @@
 # PRDATA is registered (registered on SETUP phase), so the critical path
 # is APB mux → PRDATA register input — not mux → output pad.
 # The baud-divider compare (16-bit cnt == brdiv) is registered; no multi-cycle needed.
+#
+# MEASURED (Pillar 8, TT corner): +8.332 ns slack at 12.5 ns, i.e. real
+# critical path ~4.17 ns — ~67% margin pre-layout.
 
 create_clock -name PCLK -period 12.5 [get_ports PCLK]
 
