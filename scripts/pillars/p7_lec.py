@@ -4,7 +4,7 @@ import shutil
 import subprocess
 import concurrent.futures
 from pathlib import Path
-from .common import C, Dashboard, LECMetrics, PILLAR_ICONS
+from .common import C, Dashboard, LECMetrics, PILLAR_ICONS, run_with_timeout as _run
 
 
 def _find_cell_verilog(flow) -> Path | None:
@@ -74,12 +74,12 @@ sat -verify -prove-asserts miter
 """)
 
     try:
-        result = subprocess.run(
+        result = _run(
             f"yosys {ys_file.name} > {ys_log.name} 2>&1",
-            shell=True, cwd=build_dir, timeout=120)
+            timeout=120, cwd=build_dir)
         log_text = ys_log.read_text(errors='replace')
     except subprocess.TimeoutExpired:
-        ys_log.write_text("YOSYS TIMEOUT")
+        ys_log.write_text("YOSYS TIMEOUT (process group killed — no orphaned solver)")
         return "WARN", f"{mod_name}: miniSAT timeout"
 
     if result.returncode == 0 and "no model found: SUCCESS" in log_text:
@@ -240,17 +240,24 @@ def _run_sby_lec(flow, cell_v, stubs_v, synth_v, sta_dir, sv_flag) -> tuple[str,
     if work_dir.exists():
         shutil.rmtree(work_dir)
 
-    # 4 GB virtual memory cap + 3-minute wall-clock timeout — prevents OOM on
-    # large designs (767 FFs). BMC depth=5 completes in <60s for this FPU.
+    # 2 GB virtual memory cap + 3-minute wall-clock timeout. Was 8GB
+    # (raised from 4GB after root-causing a BrokenPipeError crash in
+    # p2_formal.py's LEC-adjacent formal proof of fpu_top), lowered back
+    # down after a REAL full-machine reboot happened during async_fifo's
+    # formal re-verification despite the 8GB cap being in place — see
+    # p2_formal.py's `_ULIMIT_V_KB` comment for the full root-cause
+    # writeup (short version: `ulimit -v` only bounds one process, not
+    # the shared system, and 8GB left far too little headroom on this
+    # 12.8GB box). Same 2GB cap here for consistency.
     try:
         with open(sby_log, "w") as f:
-            subprocess.run(
-                f"ulimit -v 4194304 2>/dev/null; sby -f {sby_file}",
-                shell=True, cwd=flow.root, stdout=f, stderr=f,
-                timeout=180)
+            _run(
+                f"ulimit -v {2 * 1024 * 1024} 2>/dev/null; sby -f {sby_file}",
+                timeout=180, cwd=flow.root, stdout=f, stderr=f)
     except subprocess.TimeoutExpired:
         with open(sby_log, "a") as f:
-            f.write("\nSBY TIMEOUT: exceeded 180 s wall-clock limit\n")
+            f.write("\nSBY TIMEOUT: exceeded 180 s wall-clock limit "
+                     "(process group killed — no orphaned z3)\n")
 
     content = sby_log.read_text(errors='replace') if sby_log.exists() else ""
     if "DONE (PASS" in content:
@@ -456,9 +463,19 @@ equiv_status -assert;
 
     if not has_sby:
         print(f"     {C.info('▶')} Running Yosys LEC (RTL vs netlist, flatten + sky130 expand)...")
-    with open(lec_log, "w") as f:
-        subprocess.run(f"yosys {ys_file}",
-                       shell=True, cwd=flow.root, stdout=f, stderr=f)
+    # Hard wall-clock cap: this is the k-induction fallback that, per
+    # confirmed experiment (see project memory feedback-lec-sequential-warn),
+    # never converges on register-file/FIFO-heavy sequential designs — it
+    # runs on every such IP's LEC step, every time, with nothing to stop it
+    # from spinning indefinitely without this.
+    try:
+        with open(lec_log, "w") as f:
+            _run(f"yosys {ys_file}",
+                 timeout=300, cwd=flow.root, stdout=f, stderr=f)
+    except subprocess.TimeoutExpired:
+        with open(lec_log, "a") as f:
+            f.write("\nYOSYS TIMEOUT: equiv_induct exceeded 300s wall-clock limit "
+                     "(process group killed — no orphaned solver)\n")
 
     content = lec_log.read_text(errors='replace') if lec_log.exists() else ""
 

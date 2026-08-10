@@ -243,10 +243,14 @@ module axi_lite_slave #(
     // Formal verification — AXI4-Lite protocol invariants
     // -----------------------------------------------------------------
 `ifdef FORMAL
-    logic f_reset_seen;
-    initial f_reset_seen = 1'b0;
-    always_ff @(posedge clk or negedge rst_n)
-        if (!rst_n) f_reset_seen <= 1'b1;
+    // Force BMC's basecase through an actual reset before anything is
+    // checked. The previous `initial f_reset_seen = 1'b0;` sole-gate flop
+    // relied on a plain register's `initial` value being honored for its
+    // own power-on state, which this Yosys build does not reliably do
+    // (confirmed with a minimal repro elsewhere in this portfolio — see
+    // project memory feedback_formal_sby / CLAUDE.md "Formal verification
+    // idioms"). `initial assume(!rst_n);` is the confirmed-working idiom.
+    initial assume(!rst_n);
 
     // Control-signal delay registers (no data-path FFs — keeps SMT2 tractable)
     logic f_bvalid_d, f_bready_d;
@@ -264,7 +268,7 @@ module axi_lite_slave #(
 
     // AXI4-Lite §A3.2.1: VALID must stay asserted until READY handshake
     always_comb begin
-        if (f_reset_seen) begin
+        if (rst_n) begin
             if (f_bvalid_d && !f_bready_d) assert(bvalid_o);
             if (f_rvalid_d && !f_rready_d) assert(rvalid_o);
         end
@@ -273,9 +277,9 @@ module axi_lite_slave #(
     // Cover: basic transaction reachability (SLVERR omitted — unreachable with
     // NUM_REGS=1 chparam; SLVERR paths verified in P3/P4 simulation tests)
     always_comb begin
-        cover(f_reset_seen && bvalid_o && bready_i);   // write completes
-        cover(f_reset_seen && rvalid_o && rready_i);   // read completes
-        cover(f_reset_seen && bvalid_o && rvalid_o);   // simultaneous B+R
+        cover(rst_n && bvalid_o && bready_i);   // write completes
+        cover(rst_n && rvalid_o && rready_i);   // read completes
+        cover(rst_n && bvalid_o && rvalid_o);   // simultaneous B+R
     end
 `endif
 

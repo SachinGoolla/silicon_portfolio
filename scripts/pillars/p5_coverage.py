@@ -1,7 +1,7 @@
 """Pillar 5 — Coverage (verilator_coverage). Returns PASS | FAIL | SKIP | WARN."""
 import re
 import subprocess
-from .common import C, Dashboard, CoverageMetrics, PILLAR_ICONS
+from .common import C, Dashboard, CoverageMetrics, PILLAR_ICONS, run_with_timeout as _run
 
 
 def run(flow, threshold: int = 0, toggle_threshold: int = 0) -> str:
@@ -18,9 +18,9 @@ def run(flow, threshold: int = 0, toggle_threshold: int = 0) -> str:
     anno_dir.mkdir(exist_ok=True)
 
     try:
-        subprocess.run(f"verilator_coverage --annotate {anno_dir} {cov_dat}",
-                       shell=True, check=True, capture_output=True)
-    except subprocess.CalledProcessError as e:
+        _run(f"verilator_coverage --annotate {anno_dir} {cov_dat}",
+             timeout=60, check=True, capture_output=True)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
         print(f"     {C.warn('⚠ verilator_coverage failed:')} {e}")
         return "WARN"
 

@@ -1,8 +1,24 @@
 name: DV — Silicon Portfolio
 
 # Gate every push and PR.
-# P1-P5: run on every commit (no PDK needed — Verilator only).
-# P6-P8: see synth.yml (requires sky130 PDK via volare, nightly + manual).
+# pillar-strict:       P1-P5, hard coverage gate (95% line / 90% toggle) —
+#                       only for IPs that already clear it comfortably.
+# pillar-lightweight:  P1 (lint) + P3 (functional/cocotb) + P4 (sim) for
+#                       every other real IP — no P2 formal (SymbiYosys/z3
+#                       proofs are resource-heavy: a 767-FF design has been
+#                       observed needing 5-10+ min and multiple GB of RAM
+#                       even on a well-resourced box; not appropriate for a
+#                       free-tier CI runner) and no hard coverage gate
+#                       (several of these IPs are below 95%/90% today —
+#                       enforcing that here would fail on real, expected
+#                       state, not a regression. See each IP's STATUS.md
+#                       for its current coverage numbers).
+# P6-P8 (synth/LEC/STA): see synth.yml (requires sky130 PDK via volare,
+#                       nightly + manual) — also not run here.
+#
+# ip_digital/common_cells/mod5 is an empty placeholder (no RTL yet) and is
+# intentionally not in either matrix — it was in the old matrix and always
+# failed silently for that reason. Add it back once it has real source.
 
 on:
   push:
@@ -11,17 +27,40 @@ on:
     branches: ["main"]
 
 jobs:
-  pillar:
-    name: "Pillars 1-5 (${{ matrix.module }})"
+  orchestrator-unit-tests:
+    name: "Pillar orchestrator unit tests"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install pytest
+        run: pip install pytest
+
+      - name: Run scripts/tests/ (log parsers, hard-gate policy, timeout handling)
+        run: python3 -m pytest scripts/tests/ -v
+
+  pillar-strict:
+    name: "Pillars 1-5, coverage-gated (${{ matrix.module }})"
     runs-on: ubuntu-latest
 
     strategy:
       fail-fast: false
       matrix:
-        module:
-          - mod1000
-          - mod3ud
-          - mod5
+        include:
+          - module: mod1000
+            ip_path: ip_digital/common_cells/mod1000
+          - module: mod3ud
+            ip_path: ip_digital/common_cells/mod3ud
+          - module: rr_arbiter
+            ip_path: ip_digital/rr_arbiter
 
     steps:
       - name: Checkout
@@ -39,25 +78,27 @@ jobs:
           cache: "pip"
 
       - name: Install cocotb
-        run: pip install "cocotb==2.0.1"
+        run: pip install "cocotb==2.0.1" "pyuvm==4.0.1"
 
       - name: "[${{ matrix.module }}] Pillar 1 — Lint"
-        run: python3 scripts/pillar.py --top ${{ matrix.module }} --step lint
+        run: python3 scripts/pillar.py --top ${{ matrix.module }} --ip-path ${{ matrix.ip_path }} --step lint
 
       - name: "[${{ matrix.module }}] Pillar 2 — Formal"
-        run: python3 scripts/pillar.py --top ${{ matrix.module }} --step formal
+        run: python3 scripts/pillar.py --top ${{ matrix.module }} --ip-path ${{ matrix.ip_path }} --step formal
 
       - name: "[${{ matrix.module }}] Pillar 3 — Functional"
-        run: python3 scripts/pillar.py --top ${{ matrix.module }} --step functional
+        run: python3 scripts/pillar.py --top ${{ matrix.module }} --ip-path ${{ matrix.ip_path }} --step functional
 
       # P4: Verilator binary sim — needs no PDK
       - name: "[${{ matrix.module }}] Pillar 4 — Simulation"
-        run: python3 scripts/pillar.py --top ${{ matrix.module }} --step sim
+        run: python3 scripts/pillar.py --top ${{ matrix.module }} --ip-path ${{ matrix.ip_path }} --step sim
 
-      # P5: Coverage — 95% line and 90% toggle enforced
+      # P5: Coverage — 95% line and 90% toggle enforced. These 3 modules
+      # are known to clear this comfortably (100%/100% as of this writing);
+      # don't add a module here without checking its STATUS.md first.
       - name: "[${{ matrix.module }}] Pillar 5 — Coverage"
         run: |
-          python3 scripts/pillar.py --top ${{ matrix.module }} --step coverage \
+          python3 scripts/pillar.py --top ${{ matrix.module }} --ip-path ${{ matrix.ip_path }} --step coverage \
             --coverage-threshold 95 --coverage-toggle-threshold 90
 
       - name: Upload logs on failure
@@ -65,7 +106,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dv-logs-${{ matrix.module }}
-          path: ip_digital/common_cells/${{ matrix.module }}/logs/
+          path: ${{ matrix.ip_path }}/logs/
           retention-days: 7
 
       - name: Upload waveforms on failure
@@ -73,5 +114,70 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dv-waves-${{ matrix.module }}
-          path: ip_digital/common_cells/${{ matrix.module }}/build/sim/
+          path: ${{ matrix.ip_path }}/build/sim/
+          retention-days: 7
+
+  pillar-lightweight:
+    name: "Pillars 1+3+4 (${{ matrix.module }})"
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - module: apb_uart_master
+            ip_path: ip_digital/apb_uart_master
+          - module: async_fifo
+            ip_path: ip_digital/async_fifo
+          - module: axi_lite_slave
+            ip_path: ip_digital/axi_lite_slave
+          - module: uart_ctrl
+            ip_path: ip_digital/uart_ctrl
+          - module: fpu_top
+            ip_path: ip_digital/fpu/fpu_top
+          - module: fpu_axi_periph
+            ip_path: ip_digital/fpu_axi_periph
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install OSS CAD Suite
+        uses: YosysHQ/setup-oss-cad-suite@v3
+        with:
+          version: "2024-11-14"
+
+      - name: Set up Python + cocotb
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install cocotb
+        run: pip install "cocotb==2.0.1" "pyuvm==4.0.1"
+
+      - name: "[${{ matrix.module }}] Pillar 1 — Lint"
+        run: python3 scripts/pillar.py --top ${{ matrix.module }} --ip-path ${{ matrix.ip_path }} --step lint
+
+      - name: "[${{ matrix.module }}] Pillar 3 — Functional"
+        run: python3 scripts/pillar.py --top ${{ matrix.module }} --ip-path ${{ matrix.ip_path }} --step functional
+
+      # P4: Verilator binary sim — needs no PDK
+      - name: "[${{ matrix.module }}] Pillar 4 — Simulation"
+        run: python3 scripts/pillar.py --top ${{ matrix.module }} --ip-path ${{ matrix.ip_path }} --step sim
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dv-logs-${{ matrix.module }}
+          path: ${{ matrix.ip_path }}/logs/
+          retention-days: 7
+
+      - name: Upload waveforms on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dv-waves-${{ matrix.module }}
+          path: ${{ matrix.ip_path }}/build/sim/
           retention-days: 7

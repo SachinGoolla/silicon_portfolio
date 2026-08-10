@@ -270,14 +270,23 @@ module fpu_top #(
     // Formal properties (protocol invariants)
     // =========================================================================
 `ifdef FORMAL
-    logic f_was_reset;
-    initial f_was_reset = 0;
-    always_ff @(posedge clk or negedge rst_n)
-        if (!rst_n) f_was_reset <= 1'b1;
+    // Force BMC's basecase through an actual reset before anything is
+    // checked. The previous `initial f_was_reset = 0;` flop relied on a
+    // plain register's `initial` value being honored for its own
+    // power-on state, which this Yosys build does not reliably do
+    // (confirmed with a minimal repro — see project memory
+    // feedback_formal_sby / CLAUDE.md "Formal verification idioms").
+    // `initial assume(!rst_n);` is the confirmed-working idiom. (This
+    // specific property — ready_o==~busy_o — is a pure combinational
+    // tautology and was never actually at risk from the old idiom; fixed
+    // anyway so this file matches the rest of the portfolio's house
+    // style and doesn't model the anti-pattern for future properties
+    // added here that might not be tautologies.)
+    initial assume(!rst_n);
 
     always_comb begin
         // ready_o is always the complement of busy_o
-        if (f_was_reset) begin
+        if (rst_n) begin
             assert(ready_o == ~busy_o);
         end
     end

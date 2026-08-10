@@ -3,7 +3,9 @@ import re
 import subprocess
 import shlex
 from pathlib import Path
-from .common import C, Dashboard, STALogParser, PILLAR_ICONS
+from .common import (C, Dashboard, STALogParser, PILLAR_ICONS,
+                      decode_subprocess_output as _decode,
+                      run_with_timeout as _run)
 
 
 def _find_cell_verilog(flow) -> list[Path]:
@@ -56,7 +58,13 @@ def _run_gls(flow, synth_v: Path, cell_models: list[Path],
         f"{models_str} {shlex.quote(str(synth_v))} {shlex.quote(str(tb))} "
         f"> {gls_log} 2>&1"
     )
-    result = subprocess.run(compile_cmd, shell=True, cwd=flow.root)
+    try:
+        result = _run(compile_cmd, timeout=120, cwd=flow.root)
+    except subprocess.TimeoutExpired:
+        with open(gls_log, "a") as f:
+            f.write("\nICARUS TIMEOUT: GLS compile exceeded 120s wall-clock limit "
+                     "(process group killed)\n")
+        return "FAIL"
     if result.returncode != 0:
         # Filter noise and show only real errors
         log_text = Path(gls_log).read_text(errors='replace') if Path(gls_log).exists() else ""
@@ -71,7 +79,21 @@ def _run_gls(flow, synth_v: Path, cell_models: list[Path],
                "+notimingchecks", "+delay_mode_zero"]
     if sdf_file and sdf_file.exists():
         run_cmd.append(f"+sdf_annotate+{sdf_file}+{flow.top}")
-    result = subprocess.run(run_cmd, capture_output=True, text=True, cwd=flow.root)
+    # Zero-delay GLS has no wall-clock relationship to the testbench's own
+    # `#500_000` sim-time guard — a compile that elaborates but never
+    # actually advances simulation time (e.g. a clock generator that never
+    # starts) would hang the process indefinitely without this.
+    try:
+        result = subprocess.run(run_cmd, capture_output=True, text=True,
+                                cwd=flow.root, timeout=120)
+    except subprocess.TimeoutExpired as e:
+        # TimeoutExpired.stdout/.stderr can be raw bytes even with text=True.
+        stdout = _decode(e.stdout)
+        stderr = _decode(e.stderr) + "\nGLS TIMEOUT: exceeded 120s wall-clock limit\n"
+        with open(gls_log, "a") as f:
+            f.write(stdout)
+            f.write(stderr)
+        return "FAIL"
 
     # Append only functional output (filter timing noise) to log
     def _filter_gls_noise(text: str) -> str:
@@ -143,8 +165,13 @@ def run(flow) -> str:
             f"report_checks -path_delay max -digits 3\n"
             f"write_sdf -corner {corner_name} {sdf_out}\n"
         )
-        subprocess.run(f"sta -exit {sta_tcl} > {sta_log} 2>&1",
-                       shell=True, cwd=flow.root)
+        try:
+            _run(f"sta -exit {sta_tcl} > {sta_log} 2>&1",
+                 timeout=120, cwd=flow.root)
+        except subprocess.TimeoutExpired:
+            with open(sta_log, "a") as f:
+                f.write("\nOPENSTA TIMEOUT: exceeded 120s wall-clock limit "
+                         "(process group killed)\n")
         m = STALogParser(sta_log).parse()
         m.total_cells    = cells
         m.total_wires    = wires

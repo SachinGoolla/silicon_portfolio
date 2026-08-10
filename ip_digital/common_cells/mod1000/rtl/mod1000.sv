@@ -80,16 +80,24 @@ module mod1000(
 
 //with formal verification, we can add assertions to ensure the counter behaves as expected:
 `ifdef FORMAL
-    logic f_was_reset;
-    initial f_was_reset = 0;
-
-    // Track if a reset has ever occurred since power-on
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) f_was_reset <= 1'b1;
-    end
+    // Force BMC's basecase through an actual reset before anything is
+    // checked. The previous `initial f_was_reset = 0;` latched-flag idiom
+    // relied on a plain register's `initial` value being honored for its
+    // own power-on state, which this Yosys build does not reliably do
+    // (confirmed with a minimal repro — a flop declared `initial f=1'b0`
+    // can still read 1 at BMC step 0 with rst_n simultaneously 0). Every
+    // assertion below genuinely depends on registered state (count,
+    // count_low, etc.), unlike a pure combinational tautology, so this
+    // proof was real risk, not just theoretical — see project memory
+    // feedback_formal_sby and CLAUDE.md "Formal verification idioms".
+    // `initial assume(!rst_n);` is the confirmed-working idiom: a real
+    // constraint on the basecase's starting state. Gating directly on the
+    // current cycle's rst_n is sufficient here too — every register above
+    // is valid the same cycle rst_n deasserts, no settling cycle needed.
+    initial assume(!rst_n);
 
     always_comb begin
-        if (f_was_reset) begin
+        if (rst_n) begin
             assert(count <= 10'd999);
             // Bind pipelined shadow registers to count — required for k-induction to converge
             assert(will_be_999_q == (count == 10'd999));

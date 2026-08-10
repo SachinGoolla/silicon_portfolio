@@ -1,9 +1,77 @@
 """Shared infrastructure: colors, dataclasses, log parsers, Dashboard."""
+import os
 import re
+import signal
+import subprocess
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+
+def run_with_timeout(cmd: str, timeout: float, **kwargs) -> subprocess.CompletedProcess:
+    """Drop-in replacement for `subprocess.run(cmd, shell=True, timeout=...)`
+    that actually kills the whole process tree when the timeout fires.
+
+    `subprocess.run(..., timeout=N)` only sends the kill signal to the
+    immediate child — with `shell=True` that child is the shell itself
+    (`/bin/sh -c "..."`), not the real workload. A chain like
+    `sh -c "sby -f x.sby"` → `sby` → `yosys-smtbmc` → `z3` means the shell
+    dying does NOT kill `z3`: it gets reparented to init and keeps running,
+    still holding its RAM, invisible to the caller who believes the timeout
+    "worked". This was directly observed and root-caused during a session
+    where orphaned z3 processes survived 6-39 minutes past their supposed
+    timeout, compounding with later pillar steps and once crashing the
+    whole machine via OOM (see project memory feedback-resource-limits).
+
+    Fix: launch in a new process group (`start_new_session=True`) and on
+    timeout, SIGKILL the entire group (`os.killpg`), not just the shell.
+
+    Mirrors `subprocess.run`'s contract: returns CompletedProcess, raises
+    `subprocess.TimeoutExpired` (with whatever partial output was captured)
+    on timeout and `subprocess.CalledProcessError` on a nonzero exit when
+    `check=True` — existing except-handlers written against `subprocess.run`
+    work unchanged against this function.
+    """
+    if kwargs.pop('capture_output', False):
+        kwargs.setdefault('stdout', subprocess.PIPE)
+        kwargs.setdefault('stderr', subprocess.PIPE)
+    check = kwargs.pop('check', False)
+
+    proc = subprocess.Popen(cmd, shell=True, start_new_session=True, **kwargs)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass  # already gone
+        try:
+            stdout, stderr = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            stdout, stderr = None, None
+        raise subprocess.TimeoutExpired(cmd, timeout, output=stdout, stderr=stderr)
+
+    if check and proc.returncode != 0:
+        raise subprocess.CalledProcessError(proc.returncode, cmd, stdout, stderr)
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+
+
+def decode_subprocess_output(x) -> str:
+    """Safely turn subprocess output into str.
+
+    subprocess.TimeoutExpired.stdout/.stderr can be raw bytes even when the
+    original subprocess.run() call passed text=True — the exception is
+    raised from inside Popen.communicate() before its text-decode step
+    runs, so the exception object still holds undecoded bytes. Naively
+    concatenating that with a str literal raises TypeError and silently
+    breaks the except-handler that was supposed to log the timeout.
+    """
+    if x is None:
+        return ""
+    if isinstance(x, bytes):
+        return x.decode("utf-8", errors="replace")
+    return x
 
 
 # ── ANSI palette ──────────────────────────────────────────────────────────────
@@ -156,9 +224,28 @@ class FormalLogParser(LogParser):
         n_fail  = self.content.count("DONE (FAIL")
         n_error = self.content.count("DONE (ERROR")
         timed_out = "did not return a status" in self.content
+        # A genuine compile/syntax error (sby's setup pipeline — `base`,
+        # `prep`, `smt2_*` — failing to even parse/elaborate the design)
+        # ALSO prints "engine_0 ... did not return a status" in its
+        # summary, since the engine never got a chance to run at all. That
+        # made compile errors indistinguishable from a real solver
+        # timeout/crash by `timed_out` alone. The two ARE distinguishable
+        # in the log: a compile failure prints "<task>: task failed.
+        # ERROR." for one of the setup tasks; a solver crashing mid-proof
+        # after successfully compiling (the case the WARN classification
+        # exists for — see feedback_formal_sby) never prints that line, it
+        # only prints "ERROR: engine_N: Engine terminated without status."
+        # Confirmed against two real captured logs: a genuine rr_arbiter.sv
+        # syntax error (has "base: task failed. ERROR.") vs. a genuine z3
+        # EOF crash on rr_arbiter's liveness proof after a clean compile
+        # (does not).
+        compile_failed = bool(re.search(
+            r'\b(?:base|prep|smt2\w*): task failed\. ERROR\.', self.content))
         if n_pass > 0 and n_fail == 0 and n_error == 0:
             m.status = "PASS"
         elif n_fail > 0:
+            m.status = "FAIL"
+        elif compile_failed:
             m.status = "FAIL"
         elif timed_out:
             m.status = "WARN"   # solver timeout ≠ counterexample; treat as advisory

@@ -8,7 +8,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
-from .common import C, Dashboard, PILLAR_ICONS
+from .common import C, Dashboard, PILLAR_ICONS, run_with_timeout as _run
 
 
 # ── UPF dataclass ─────────────────────────────────────────────────────────────
@@ -29,10 +29,22 @@ class UPFMetrics:
 
 # ── UPF parser ────────────────────────────────────────────────────────────────
 
+def _join_continuations(text: str) -> str:
+    """Join Tcl backslash line-continuations so multi-line commands
+    (e.g. set_isolation ... \\\n -domain ... \\\n ...) parse as one line."""
+    joined = []
+    for raw_line in text.splitlines():
+        if joined and joined[-1].rstrip().endswith('\\'):
+            joined[-1] = joined[-1].rstrip()[:-1] + ' ' + raw_line.strip()
+        else:
+            joined.append(raw_line)
+    return "\n".join(joined)
+
+
 def _parse_upf(upf_file: Path) -> UPFMetrics:
     """Statically parse UPF Tcl commands to extract power architecture."""
     m = UPFMetrics()
-    text = upf_file.read_text(errors='replace')
+    text = _join_continuations(upf_file.read_text(errors='replace'))
 
     for line in text.splitlines():
         line = line.strip()
@@ -110,9 +122,15 @@ def _run_yosys_upf(flow, upf_file: Path, synth_v: Path) -> str:
         f"upf_check\n"
         f"stat\n"
     )
-    result = subprocess.run(
-        f"yosys -q -s {tcl} > {yosys_log} 2>&1",
-        shell=True, cwd=flow.root)
+    try:
+        result = _run(
+            f"yosys -q -s {tcl} > {yosys_log} 2>&1",
+            timeout=60, cwd=flow.root)
+    except subprocess.TimeoutExpired:
+        with open(yosys_log, "a") as f:
+            f.write("\nYOSYS TIMEOUT: read_upf check exceeded 60s wall-clock limit "
+                     "(process group killed)\n")
+        return "WARN"
 
     if not yosys_log.exists():
         return "SKIP"

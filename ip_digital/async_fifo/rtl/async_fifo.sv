@@ -120,14 +120,26 @@ module async_fifo #(
     // $past() and cover() are valid inside always blocks in Yosys formal flow.
     `ifdef FORMAL
 
-        reg f_wr_started, f_rd_started;
-        initial begin f_wr_started = 0; f_rd_started = 0; end
-        always @(posedge wr_clk) f_wr_started <= 1;
-        always @(posedge rd_clk) f_rd_started <= 1;
+        // Force BMC's basecase through an actual reset on both clock
+        // domains before anything is checked. The previous
+        // `initial f_wr_started/f_rd_started = 0;` flop pattern relied on
+        // a plain register's `initial` value being honored for its own
+        // power-on state, which this Yosys build does not reliably do
+        // (confirmed with a minimal repro elsewhere in this portfolio —
+        // see project memory feedback_formal_sby). This design's exposure
+        // was already lower than most: every assertion below was ALSO
+        // gated directly on wr_rst_n/rd_rst_n (no `initial`-value
+        // dependency), a redundant belt-and-suspenders check the other
+        // IPs lacked. `initial assume(!wr_rst_n); initial assume(!rd_rst_n);`
+        // makes that redundant gate sufficient on its own — the
+        // f_wr_started/f_rd_started flops are no longer needed once the
+        // basecase itself is properly constrained.
+        initial assume(!wr_rst_n);
+        initial assume(!rd_rst_n);
 
         // ── Write-domain properties ──────────────────────────────────────────
         always @(posedge wr_clk) begin
-            if (wr_rst_n && f_wr_started) begin
+            if (wr_rst_n) begin
                 // Gray pointer must always match binary (catches b2g bugs)
                 assert (wr_gray == b2g(wr_bin));
                 // Full flag blocks new writes: wr_bin frozen the cycle after full
@@ -138,7 +150,7 @@ module async_fifo #(
 
         // ── Read-domain properties ───────────────────────────────────────────
         always @(posedge rd_clk) begin
-            if (rd_rst_n && f_rd_started) begin
+            if (rd_rst_n) begin
                 // Gray pointer must always match binary
                 assert (rd_gray == b2g(rd_bin));
                 // Empty flag blocks reads: rd_bin frozen the cycle after empty
@@ -149,10 +161,10 @@ module async_fifo #(
 
         // ── Cover properties ─────────────────────────────────────────────────
         always @(posedge wr_clk)
-            if (f_wr_started) cover (full);
+            if (wr_rst_n) cover (full);
 
         always @(posedge rd_clk)
-            if (f_rd_started) cover (!empty);
+            if (rd_rst_n) cover (!empty);
 
     `endif
 

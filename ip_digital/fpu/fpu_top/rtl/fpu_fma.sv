@@ -668,13 +668,20 @@ module fpu_fma #(
     // Formal: basic sanity properties
     // =========================================================================
 `ifdef FORMAL
-    logic f_past_reset;
-    initial f_past_reset = 0;
-    always_ff @(posedge clk or negedge rst_n)
-        if (!rst_n) f_past_reset <= 1'b1;
+    // Force BMC's basecase through an actual reset before anything is
+    // checked. The previous `initial f_past_reset = 0;` flop relied on a
+    // plain register's `initial` value being honored for its own
+    // power-on state, which this Yosys build does not reliably do
+    // (confirmed with a minimal repro — see project memory
+    // feedback_formal_sby / CLAUDE.md "Formal verification idioms").
+    // `initial assume(!rst_n);` is the confirmed-working idiom. (This
+    // module's own FORMAL block isn't currently exercised by any .sby —
+    // fpu_top's proof stubs fpu_fma out entirely — but fixed anyway so a
+    // future standalone proof doesn't inherit the risk.)
+    initial assume(!rst_n);
 
     always_comb begin
-        if (f_past_reset) begin
+        if (rst_n) begin
             if (!valid_o) assert(fflags_o == 5'b0);
         end
     end

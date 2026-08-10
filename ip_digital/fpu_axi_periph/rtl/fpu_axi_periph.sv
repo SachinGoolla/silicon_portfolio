@@ -238,13 +238,17 @@ module fpu_axi_periph #(
     // their own standalone P2 formal; this checks only the new glue logic.
     // -----------------------------------------------------------------
 `ifdef FORMAL
-    logic f_reset_seen;
-    initial f_reset_seen = 1'b0;
-    always_ff @(posedge clk or negedge rst_n)
-        if (!rst_n) f_reset_seen <= 1'b1;
+    // Force BMC's basecase through an actual reset before anything is
+    // checked. The previous `initial f_reset_seen = 1'b0;` sole-gate flop
+    // relied on a plain register's `initial` value being honored for its
+    // own power-on state, which this Yosys build does not reliably do
+    // (confirmed with a minimal repro elsewhere in this portfolio — see
+    // project memory feedback_formal_sby / CLAUDE.md "Formal verification
+    // idioms"). `initial assume(!rst_n);` is the confirmed-working idiom.
+    initial assume(!rst_n);
 
     always_comb begin
-        if (f_reset_seen) begin
+        if (rst_n) begin
             // A STATUS write always encodes BUSY xor DONE (start vs. complete).
             if (hw_we[IDX_STATUS])
                 assert(hw_wdata[IDX_STATUS*DATA_WIDTH] !=
@@ -259,9 +263,9 @@ module fpu_axi_periph #(
     end
 
     always_comb begin
-        cover(f_reset_seen && state_q == S_ISSUE);
-        cover(f_reset_seen && state_q == S_WAIT);
-        cover(f_reset_seen && hw_we[IDX_RESULT]);
+        cover(rst_n && state_q == S_ISSUE);
+        cover(rst_n && state_q == S_WAIT);
+        cover(rst_n && hw_we[IDX_RESULT]);
     end
 `endif
 
