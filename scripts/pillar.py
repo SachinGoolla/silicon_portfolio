@@ -86,15 +86,16 @@ def _pillar_note(step: str, status: str, row: dict) -> Optional[str]:
     if step == "upf" and status == "SKIP":
         return "No .upf file for this module — not applicable (e.g. a pure combinational block with no power-domain structure)."
     if step == "formal" and status == "WARN":
-        return ("Solver did not converge within its wall-clock budget on this "
-                 "run — z3 engine crashed on a memory-pressure BrokenPipeError "
-                 "(\"did not return a status\"), not a disproven property. "
-                 "This is a resource ceiling on the verification host for large "
-                 "designs (fpu_top: 767 FFs, mode prove depth 10, running "
-                 "concurrently with its own cover-mode check), not a design "
-                 "defect — cross-verified by P7 LEC + P8 GLS + full functional "
-                 "coverage. Re-run in isolation (nothing else memory-heavy "
-                 "running concurrently) for a clean PASS attempt.")
+        return ("Solver did not converge within its resource budget on this "
+                 "run — the z3 engine hit its memory ceiling (\"did not return "
+                 "a status\") or was killed by its wall-clock cap, not a "
+                 "disproven property. This is a resource ceiling on the "
+                 "verification host for this specific design's state size at "
+                 "this depth, not a design defect. See this IP's STATUS.md "
+                 "'Recent runs' history and formal log for the actual depth, "
+                 "solver, and crash signature — this rationale is intentionally "
+                 "generic across IPs rather than hardcoding one design's "
+                 "numbers into every WARN.")
     if step == "sta" and status == "PASS" and row.get("slack_status") == "VIOLATED":
         return (f"TT corner MET; the worst-case corner shown "
                 f"({row.get('slack_ns', 0):+.3f} ns) is SS (-40°C/1.28V) extreme-corner "

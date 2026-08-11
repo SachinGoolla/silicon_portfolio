@@ -4,7 +4,7 @@ _Companion to `STATUS.md`. A mod-3 up/down counter cell — 32 cells synthesized
 
 ## Final Status Dashboard
 
-**Overall: ✅ SIGNED OFF — all 9 pillars PASS (2026-08-03 19:35:06).**
+**Overall: ✅ SIGNED OFF, genuinely re-verified — full `--force` 9-pillar sweep 2026-08-10 19:11:23 (commit `02b8144`).**
 
 | Pillar | Status | Metric |
 |---|---|---|
@@ -36,27 +36,32 @@ While debugging `rr_arbiter` I learned that this Yosys build rejects SVA tempora
 
 **1. Is bare `$past()` the broken pattern? No.** `$past()` used as a plain system function inside an immediate `always @(posedge clk) assert(...)` block parses fine on this toolchain — confirmed directly. This file uses `$past(!rst)` exactly that way. A useful discrimination exercise: `uart_ctrl`'s full `assert property`/`property...endproperty` SVA is the known-broken shape; this file merely *rhymes* with it. Pattern recognition includes knowing when two similar-looking things are different.
 
-**2. Does the `initial init = 1'b0;` idiom endanger this proof? Far less than its sibling's.** The same session, I found declared `initial` values aren't reliably honored in BMC's basecase. That idiom is present here — but I traced the actual exposure: `init` is set **unconditionally** on the very first clock edge (no reset gating at all), so by step 1 it reads `1` regardless of its step-0 value; and the transition-sanity assertion is additionally gated by `$past(!rst)`, firing only once a real prior cycle exists. The blast radius is a single step-0 window with no state dependence — structurally narrower than `mod1000`'s, whose assertions consume registered state genuinely undefined before reset. **Net assessment: lower risk than `mod1000`, but still not independently re-confirmed with the corrected `initial assume(!rst)` idiom — so I logged it for a `--force` re-run rather than assuming.** Confirm-don't-assume applies even when the analysis says "probably fine."
+**2. Does the `initial init = 1'b0;` idiom endanger this proof? Less than `mod1000`'s — but I was wrong about why it was safe, and re-verification caught it.** The same session, I found declared `initial` values aren't reliably honored in BMC's basecase. That idiom is present here — my static analysis traced the exposure to a single step-0 window (`init` is set unconditionally on the first clock edge; the transition-sanity assertion is additionally gated by `$past(!rst)`) and rated it lower-risk than `mod1000`'s genuinely state-dependent exposure.
+
+**Then I applied the `initial assume(!rst)` fix and ran it — and got a real basecase counterexample anyway.** Not the risk I'd analyzed: `mod3ud`'s reset (`always @(posedge clk or posedge rst) if (rst) cnt<=0;`) is **active-high**, the opposite polarity from every other IP's `rst_n` in this portfolio. My first fix wrote `initial assume(!rst);`, pattern-matching the `!rst_n` convention I'd just proven everywhere else, without checking this design's actual polarity. Basecase failed immediately — `cnt_prev`, unconstrained at step 0, never got a real reset-derived value before the transition check fired. Corrected to `initial assume(rst);` and re-ran: genuine k-induction PASS, depth 30, cover mode PASS.
+
+**Why this matters more than the fix itself:** my static risk analysis was internally sound but blind to a fact only the RTL's reset sensitivity list carried — `posedge rst`, not `negedge rst_n`. No amount of reasoning about the `initial`-value bug would have caught a polarity mismatch, because that's a different bug in a different place. The lesson I'm keeping: static analysis narrows *where* to look; only running the tool tells you whether you were right. "Confirm, don't assume" isn't a slogan here — it's the exact reason this proof is genuine instead of subtly wrong in a new way.
 
 ## Result
 
-- **9/9 pillars PASS** at commit `e3d1c2e` — the only portfolio cell with full marks on every row.
+- **9/9 pillars PASS, genuinely re-verified** — full `--force` sweep 2026-08-10 19:11:23 (commit `02b8144`) — the only portfolio cell with full marks on every row, earned twice: once by design, once by catching my own fix's polarity error.
 - **Functional:** 6/6 directed tests PASS.
 - **Coverage:** 100.0% line / 100.0% toggle — full closure, the right bar for a reusable common cell.
-- **PPA:** 32 cells — the smallest mapped design in the portfolio; 3 LEC points proven; **1579.8 MHz** achievable with +0.368 ns slack MET; GLS clean. A 32-cell combinational-bound cell *should* be fast — confirming it rather than assuming it is the job.
+- **PPA:** 32 cells — the smallest mapped design in the portfolio; 3 LEC points proven; **1579.8 MHz** achievable with +0.368 ns slack MET; GLS clean.
 
 ## Key Accomplishments
 
 - **Accomplished** total coverage closure on a reusable cell, **as measured by** 100% line + 100% toggle, **by doing** directed tests plus a dedicated formal wrapper instead of trusting the design's smallness.
-- **Accomplished** a clean toolchain-trust classification, **as measured by** two minimal repros with definite answers, **by doing** experiment-driven discrimination between "looks like the broken pattern" and "is the broken pattern."
+- **Accomplished** detection of my own fix's polarity error before it shipped silently, **as measured by** a real BMC basecase counterexample on the first re-verification attempt, **by doing** the re-run instead of trusting the static analysis that said "lower risk."
 - **Accomplished** the portfolio's fastest timing closure, **as measured by** 1579.8 MHz with +0.368 ns MET, **by doing** lean combinational design and verifying the expectation rather than assuming it.
 
 ## Skills Demonstrated
 
-- **Precision discrimination** — separated resemblance from identity via minimal repro.
-- **Blast-radius analysis** — quantified worst-case exposure of a known toolchain bug instead of binary panic/complacency.
+- **Precision discrimination** — separated resemblance from identity via minimal repro on the `$past()` question.
+- **Intellectual honesty about my own mistakes** — reported the polarity error and how it was caught, not just the eventual clean result.
+- **Execution over analysis** — treated "low risk by reasoning" as a hypothesis to test, not a conclusion to ship.
 - **Uniform standards** — a 32-cell common cell received the same audit discipline as a 1,004-cell FPU.
 
 ## Open Items — What I'd Do Next
 
-One `--force` P2 re-run with the corrected `initial assume(!rst)` idiom to convert "low-risk by analysis" into "confirmed by execution."
+None for this IP — signoff is genuine and re-verified. Worth carrying forward: check reset polarity explicitly on every IP before applying a formal-idiom fix by pattern-matching, rather than assuming the portfolio-wide `rst_n` convention holds everywhere.

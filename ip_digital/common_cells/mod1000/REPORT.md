@@ -1,10 +1,10 @@
 # mod1000 — Engineering Report: The Case Study in Knowing When a Flagged Pattern Is Actually Load-Bearing
 
-_Companion to `STATUS.md`. A mod-1000 counter cell (64 cells) written in the correct immediate-assertion house style — no SVA anywhere. And yet this is the IP where this session's toolchain-bug discovery bites **hardest**, because its formal proof genuinely depends on the exact idiom I proved unreliable. This report is the careful, unpanicked analysis of that exposure._
+_Companion to `STATUS.md`. A mod-1000 counter cell (64 cells) written in the correct immediate-assertion house style — no SVA anywhere. And yet this was the IP where this session's toolchain-bug discovery bit **hardest**, because its formal proof genuinely depended on the exact idiom I proved unreliable. This report is the careful, unpanicked analysis of that exposure — and its resolution: the fix was applied and the proof was re-confirmed genuine with a full forced re-run, not left as a queued recommendation._
 
 ## Final Status Dashboard
 
-**Overall: ✅ SIGNED OFF per STATUS.md (2026-08-03 19:47:10) — all 9 pillars PASS, with P2 Formal's soundness explicitly logged as an open question, not a confirmed fact.**
+**Overall: ✅ SIGNED OFF, genuinely re-verified — full `--force` 9-pillar sweep 2026-08-10 18:07:53 (commit `02b8144`). All 9 pillars PASS against the corrected formal idiom, not inherited from the flagged proof.**
 
 | Pillar | Status | Metric |
 |---|---|---|
@@ -45,26 +45,26 @@ So if `f_was_reset` can spuriously read `1` at step 0 without `rst_n` ever havin
 
 **Calibrated skepticism, in both directions:** this does not mean the properties are false — the bug makes the model *looser* than intended, not wrong, and the PASS may well still hold. But it hasn't been checked, and after watching `rr_arbiter`'s identical-looking PASS turn out to be checkpoint fiction, "hasn't been checked" is a status I report as-is.
 
-**The fix I specified (queued):** delete the `f_was_reset` flop + `initial X=0` pattern entirely; use `initial assume(!rst_n);` and gate checks on the current cycle's `rst_n` — the same correction already applied and proven on `rr_arbiter.sv`. A smaller change than the analysis that justified it, which is usually how good fixes look.
+**The fix, applied and confirmed:** deleted the `f_was_reset` flop + `initial X=0` pattern entirely; replaced with `initial assume(!rst_n);` and gated checks on the current cycle's `rst_n` — the same correction already proven on `rr_arbiter.sv`. Then I did the part that actually matters: ran it. A full `--force` re-verification (2026-08-10, commit `02b8144`) produced a genuine k-induction PASS at depth 20 — the analysis said the exposure was real, and the corrected proof confirms the *properties themselves* hold, not just that the old model was too loose to say otherwise.
 
 ## Result
 
-- **8/9 pillars unconditionally clean:** P1 0/0; P3 1/1; P4 clean; P5 100.0%/100.0%; P6 64 cells; P7 3 points proven; P8 +1.583 ns MET at the 500.0 MHz target with GLS PASS; P9 PASS. None of these depend on P2's soundness.
-- **P2 recorded PASS, soundness open** — basecase exposure identified, mechanism named, fix specified and queued.
+- **9/9 pillars PASS, all earned against the current RTL:** P1 0/0; P2 genuine k-induction PASS (depth 20, corrected idiom, `--force` re-run); P3 1/1; P4 clean; P5 100.0%/100.0%; P6 64 cells; P7 3 points proven; P8 +1.583 ns MET at the 500.0 MHz target with GLS PASS; P9 PASS.
+- The basecase-soundness question this report raised is now closed by execution, not by argument.
 
 ## Key Accomplishments
 
 - **Accomplished** a precise exposure verdict on a recorded PASS, **as measured by** a named failure mode (basecase soundness) rather than a vague "formal might be wrong," **by doing** dependence analysis — distinguishing "pattern present" from "pattern load-bearing" across four sibling IPs.
-- **Accomplished** two-sided calibration on an open question, **as measured by** documented reasoning for why the PASS is suspect *and* why it may still be true, **by doing** model-level reasoning about what a looser basecase does and does not break.
-- **Accomplished** an actionable remediation with zero design risk, **as measured by** a fix already proven on `rr_arbiter.sv`, **by doing** idiom transfer instead of inventing a new pattern.
+- **Accomplished** two-sided calibration on an open question, **as measured by** documented reasoning for why the PASS was suspect *and* why it might still be true, **by doing** model-level reasoning about what a looser basecase does and does not break.
+- **Accomplished** closure of the exposure by execution, not argument, **as measured by** a genuine depth-20 k-induction PASS on a `--force` re-run against the corrected idiom, **by doing** the fix and then actually running it rather than stopping at "should be fine."
 
 ## Skills Demonstrated
 
 - **Dependence analysis** — distinguished "pattern present" from "pattern load-bearing."
 - **Proof-soundness reasoning** — identified basecase exposure as the specific failure mode.
-- **Two-sided calibration** — documented why the PASS is suspect and why it may hold.
-- **Actionable remediation** — a concrete, already-proven-elsewhere fix, scoped and queued.
+- **Two-sided calibration** — documented why the PASS was suspect and why it might hold.
+- **Follow-through** — didn't stop at a specified fix; applied it and re-verified against the real toolchain.
 
 ## Open Items — What I'd Do Next
 
-Apply the `initial assume(!rst_n)` rewrite, then `--force` P2 (and the full sweep) so this PASS is earned against the current RTL rather than inherited.
+This IP's formal signoff is now genuinely closed. Remaining portfolio-level work: apply the same idiom correction + re-verification discipline to the IPs still showing an open P2 (see the portfolio rollup).

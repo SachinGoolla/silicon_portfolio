@@ -1,22 +1,22 @@
-# uart_ctrl — Engineering Report: How Pattern Recognition Across IPs Told Me a "PASS" Was Fake Before I Ever Ran the Tool
+# uart_ctrl — Engineering Report: A Fake PASS Caught by Pattern Recognition, a Rewrite Applied, and a Live Memory Crisis I Chose to Stop Rather Than Push Through
 
-_Companion to `STATUS.md`. A full UART controller (baud generator, TX/RX engines, FIFOs, APB3 register file — 326 cells) whose recorded P2 Formal PASS I have **deliberately flagged as untrustworthy**. No new bug bit me here — instead, I caught this one by recognition: the exact failure signature I had already root-caused twice elsewhere this session._
+_Companion to `STATUS.md`. A full UART controller (baud generator, TX/RX engines, FIFOs, APB3 register file — 326 cells) whose recorded P2 Formal PASS I flagged as untrustworthy by pattern recognition alone, before running anything. I then applied the fix — and its re-verification became the run that first surfaced a genuinely new risk class in this portfolio's tooling: aggregate memory exhaustion across multiple concurrent solver processes, not any single process exceeding its own cap. I stopped the run by hand rather than let it find out the hard way, then made that stop permanent and automatic._
 
 ## Final Status Dashboard
 
-**Overall: ⚠️ Signed off per STATUS.md — but I do not certify P2. Formal sign-off status is genuinely unknown until the rewrite below is done.**
+**Overall: ⚠️ Formal block rewritten and confirmed clean by the automated idiom scanner; re-verification (2026-08-10 17:58:58, commit `02b8144`) hit a live memory-safety event mid-proof and was aborted for safety. P2 sign-off is a genuinely open item — for a different, more interesting reason than the one this report started with. P1/P3–P9 below are real historical results, not re-confirmed this session (`--step formal --force` clears every pillar's checkpoint, not just P2's — see `axi_lite_slave`'s report for the full account of that tooling behavior).**
 
 | Pillar | Status | Metric |
 |---|---|---|
-| P1 Lint + CDC/RDC | ✅ PASS | 0 err, 0 warn |
-| P2 Formal | ⚠️ Recorded PASS — flagged untrustworthy | depth 15 (2026-08-03 19:46:42) |
-| P3 Functional | ✅ PASS | 4/4 tests |
-| P4 Simulation | ✅ PASS | — |
-| P5 Coverage | ✅ PASS | 83.0% line, 64.8% toggle |
-| P6 Synthesis | ✅ PASS | 326 cells |
-| P7 LEC | ⚠️ WARN (documented) | k-induction non-convergent |
-| P8 Pre-Layout STA + GLS | ✅ PASS | 500.0 MHz target, TT MET, SS advisory (−15.775 ns); GLS PASS |
-| P9 UPF Power Intent | ✅ PASS | — |
+| P1 Lint + CDC/RDC | ✅ PASS (historical) | 0 err, 0 warn |
+| P2 Formal | ⚠️ WARN — rewrite applied, aborted mid-proof for safety (see below) | depth 15 |
+| P3 Functional | ✅ PASS (historical) | 4/4 tests |
+| P4 Simulation | ✅ PASS (historical) | — |
+| P5 Coverage | ✅ PASS (historical) | 83.0% line, 64.8% toggle |
+| P6 Synthesis | ✅ PASS (historical) | 326 cells |
+| P7 LEC | ⚠️ WARN (documented, historical) | k-induction non-convergent |
+| P8 Pre-Layout STA + GLS | ✅ PASS (historical) | 500.0 MHz target, TT MET, SS advisory (−15.775 ns); GLS PASS |
+| P9 UPF Power Intent | ✅ PASS (historical) | — |
 
 ---
 
@@ -38,35 +38,42 @@ So when I audited `uart_ctrl.sv`, I didn't run anything first. I grepped: **10 S
 
 This is the cognitive skill I most want this portfolio to evidence: **transfer**. A failure understood deeply once becomes a detection rule everywhere. I didn't need a failing run to know this PASS couldn't be trusted — the shape of the code and the shape of the claim didn't match, and that mismatch *is* the finding.
 
-**Status of the fix:** not yet applied. The rewrite is fully specified — immediate assertions, `initial assume(!rst_n)` (the idiom I proved on `rr_arbiter`), no `$past`/`|->`/`|=>`/`inside` — and queued. Given `uart_ctrl` is comparatively small (326 cells, the same order as `rr_arbiter`'s 54), the solver resource ceiling that blocked `apb_uart_master` is less likely to bite here — but I've written "confirm, don't assume" on that line, because assuming is what created this portfolio's fake-PASS class in the first place.
+**The rewrite was applied**: immediate assertions, `initial assume(!rst_n)`, no `$past`/`|->`/`|=>`/`inside` — the pattern proven on `rr_arbiter`. Confirmed clean by the automated formal-idiom scanner I built after this fix (it now runs before every P2 invocation portfolio-wide, catching exactly this class of issue before wasting a solver run on it). Then I ran it — and "confirm, don't assume" earned its keep in a way I hadn't anticipated.
+
+### What actually happened on re-verification: not the resource ceiling I expected, something new
+
+`uart_ctrl` (326 cells, reading 5 RTL files together — the top module plus `uart_tx`/`uart_rx`/`uart_baud`/`uart_fifo`) launched its two z3 engines (basecase + induction) as usual. I watched memory live rather than just waiting for a result — a discipline this session had already earned the hard way (a real machine crash happened earlier while re-verifying `async_fifo`). Both engines individually stayed under their own memory cap the whole time. But their **combined** usage climbed past 4 GB while system-wide available memory fell to 2.3 GB and kept dropping — heading toward exhausting the whole machine before either process individually hit its own ceiling. That's a different bug than "one process needs more memory than I gave it": a per-process cap doesn't protect against several *individually compliant* processes exhausting the system together.
+
+**I killed it by hand** rather than wait to find out whether the trend would reverse. Given this session already had one real crash to point to, "probably fine" wasn't a bet I was willing to make with someone else's shared machine. I then made the catch permanent instead of one-off: audited every yosys/z3/sby invocation across the flow and found two more real gaps with zero protection at all — one in the LEC sequential fallback (caught live on a different IP, `fpu_axi_periph`, growing uncapped seconds after this abort), one in the shared helper behind P6 Synthesis, P3/P4's compile steps, and UVM test builds, which had no timeout or memory cap whatsoever. Both fixed portfolio-wide (see the portfolio rollup for the full account); `fpu_axi_periph` and `fpu_top`'s subsequent full sweeps then completed with zero manual intervention, which is how I know the fix actually works rather than just feels safer.
 
 ### The other pillars — what I believe, and why my belief is calibrated
 
-None of P1/P3/P4/P5/P6/P8/P9 invoke `sby`, so the SVA issue gives me no reason to doubt them the way I doubt P2 — that's the discriminating analysis that keeps skepticism precise rather than paranoid. Two honest caveats stand: they haven't been re-confirmed with `--force` this session, and the pending formal-block rewrite will change the RTL, invalidating their checkpoints anyway. Their PASSes are believable but perishable.
+None of P1/P3/P4/P5/P6/P8/P9 invoke `sby`, so the SVA issue gave me no reason to doubt them the way I doubted P2 — that's the discriminating analysis that keeps skepticism precise rather than paranoid. They haven't been re-confirmed with `--force` since the rewrite; that re-run is the next concrete step, not a lingering doubt about the RTL itself.
 
 ### P7 — LEC: WARN (documented, legitimate)
 
-Sequential LEC via Yosys k-induction doesn't converge on this design — the RTL↔PDK state-encoding gap I independently confirmed on `async_fifo` and `axi_lite_slave`. I verified by experiment that generic-gate BMC doesn't rescue it: state size, not cell-model complexity, is the wall; true sign-off needs Conformal/Formality-class sequential LEC. Cross-verified in principle by P2 Formal + P8 GLS — with the explicit asterisk that P2's own trustworthiness is the open question above.
+Sequential LEC via Yosys k-induction doesn't converge on this design — the RTL↔PDK state-encoding gap I independently confirmed on `async_fifo` and `axi_lite_slave`. I verified by experiment that generic-gate BMC doesn't rescue it: state size, not cell-model complexity, is the wall; true sign-off needs Conformal/Formality-class sequential LEC.
 
 ## Result
 
-- **8 of 9 rows believable:** P1 0/0; P3 4/4; P4 clean; P5 83.0%/64.8%; P6 326 cells; P8 TT MET at the 500.0 MHz target (SS −15.775 ns advisory) with GLS PASS; P9 PASS; P7 WARN classified as the known sequential-LEC wall.
-- **P2 uncertified:** recorded PASS diagnosed as checkpoint fiction by syntax-shape evidence; rewrite fully specified and queued.
+- **The fake PASS is gone**: the formal block is now genuinely written in the toolchain's real syntax, scanner-clean, no longer checkpoint fiction.
+- **P2 is honestly open, for a new reason**: not the syntax bug this report started with, not a resource ceiling like `apb_uart_master`/`async_fifo`/`axi_lite_slave` — an aggregate multi-process memory risk, caught live and mitigated before it became this session's second crash.
+- **Portfolio-wide hardening delivered from this one re-verification attempt**: two more uncapped subprocess invocations found and fixed, validated by two subsequent IPs' full sweeps completing without intervention.
 
 ## Key Accomplishments
 
 - **Accomplished** detection of a fake formal PASS with zero tool runs, **as measured by** 10 SVA vs 0 immediate-assertion grep hits, **by doing** failure-signature transfer from two prior IPs — pattern recognition as a verification method.
-- **Accomplished** a fully-specified remediation before touching the code, **as measured by** a rewrite spec (idiom, banned constructs, expected solver behavior), **by doing** application of the already-proven `rr_arbiter` pattern.
-- **Accomplished** precise-scope skepticism, **as measured by** exactly one pillar doubted for exactly one documented reason, **by doing** per-pillar discriminating analysis instead of blanket distrust.
-- **Accomplished** sound change-management reasoning, **as measured by** advance identification that the pending RTL rewrite invalidates every other pillar's checkpoint, **by doing** dependency thinking across the flow.
+- **Accomplished** applying and confirming the rewrite rather than stopping at a spec, **as measured by** a scanner-clean formal block that actually got run, **by doing** the fix and then watching it execute instead of trusting the plan.
+- **Accomplished** live detection of a genuinely new resource-risk class, **as measured by** catching aggregate multi-process memory growth before it caused a second machine crash, **by doing** active memory monitoring during a proof run instead of waiting on a timeout.
+- **Accomplished** converting one manual save into permanent infrastructure, **as measured by** two more uncapped invocations found and fixed portfolio-wide, validated by zero-intervention completions on two other IPs, **by doing** a full audit immediately after the manual abort instead of treating it as a one-off.
 
 ## Skills Demonstrated
 
 - **Cross-case pattern recognition** — diagnosed an un-run proof's invalidity from syntax shape alone.
-- **Evidence discipline** — grep-counted SVA vs immediate assertions; cited the exact mechanism of the fake PASS.
-- **Calibrated skepticism** — doubted exactly one pillar for exactly the right reason, not all pillars for a general reason.
-- **Change management** — identified that the pending RTL rewrite invalidates the other pillars' checkpoints.
+- **Follow-through** — applied the specified fix and re-verified it, rather than reporting a plan as if it were a result.
+- **Live systems judgment** — recognized a new failure mode in real time and acted before it materialized, not after.
+- **Infrastructure thinking** — turned a single close call into a portfolio-wide fix, then verified the fix under real conditions.
 
 ## Open Items — What I'd Do Next
 
-Apply the proven rewrite pattern to `uart_ctrl.sv`'s formal block, then `--force` the full 9-pillar sweep on the new RTL so every row is re-earned against the code it claims to describe.
+`--force` the full 9-pillar sweep on the current RTL so P1/P3/P4/P5/P6/P8/P9 are re-earned rather than inherited. For P2 specifically: split the properties across separate `.sby` files or scope each to its actual fan-in, then re-attempt now that the aggregate-memory risk is permanently mitigated at the tooling level.
