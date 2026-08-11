@@ -1,0 +1,24 @@
+[options]
+# Formal target: TX/RX glue safety properties (see uart_axi_periph.sv
+# `ifdef FORMAL` block). axi_lite_slave, apb_uart_master, and uart_ctrl are
+# replaced by free (anyseq) stand-ins from uart_axi_periph_formal_stub.sv for
+# this proof only — all three are already signed off standalone by their own
+# P2 formal. A plain blackbox was rejected by the SMT2 backend; pulling in
+# the real uart_ctrl (326 cells) is the same design whose formal run
+# triggered this session's aggregate-memory abort — anyseq keeps this proof
+# to the glue's own state while still letting the solver explore every
+# possible submodule response.
+mode bmc
+depth 5
+
+[engines]
+smtbmc z3
+
+[script]
+read_verilog -sv -D FORMAL uart_axi_periph.sv
+read_verilog -sv uart_axi_periph_formal_stub.sv
+prep -top uart_axi_periph
+
+[files]
+../rtl/uart_axi_periph.sv
+uart_axi_periph_formal_stub.sv
