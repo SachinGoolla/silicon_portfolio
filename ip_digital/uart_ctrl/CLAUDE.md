@@ -15,8 +15,15 @@
 - BRDIV=0 in P3/P4 simulation → baud16_tick fires every cycle → frame = 160 cycles
 
 ## Formal property locations
-All SVA properties are in `rtl/uart_ctrl.sv` under `` `ifdef FORMAL ``.
-The `.sby` file reads all 5 RTL files from `../rtl/`.
+All properties are in `rtl/uart_ctrl.sv` under `` `ifdef FORMAL ``, written
+as immediate assertions (`assert(...)`/`cover(...)` inside clocked always
+blocks), NOT SVA `assert property`/`property...endproperty`/`inside {...}`
+— this repo's open-source Yosys build can't parse any of that (see root
+CLAUDE.md "Formal verification idioms"). This file used to be written in
+SVA and showed a checkpoint-carried false PASS; the underlying `.sby` run
+always hard-errored. Gated on `initial assume(!PRESETn);` + current-cycle
+`PRESETn`, not a derived "was ever reset" latch. The `.sby` file reads all
+5 RTL files from `../rtl/`.
 
 ## GLS notes
 - Yosys synth output has no parameters → use `` `ifdef GLS uart_ctrl dut(.*)``

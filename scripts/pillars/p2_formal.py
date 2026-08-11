@@ -27,7 +27,14 @@ from .common import (C, Dashboard, FormalLogParser, PILLAR_ICONS,
 # 2GB (apb_uart_master, unresolved) now fails its own ulimit cleanly and
 # predictably instead of risking a system-wide crash — a strictly better
 # trade-off given the demonstrated real-world cost of getting this wrong.
-_ULIMIT_V_KB = 2 * 1024 * 1024  # 2GB
+_ULIMIT_V_KB = 3 * 1024 * 1024  # 3GB — see note above; bumped 2GB->3GB after
+# 2GB proved too tight for async_fifo/axi_lite_slave/uart_ctrl (all WARNed
+# at the 2GB ceiling with a healthy, stable 6.6GB available beforehand —
+# genuine per-process need, not system pressure). Still well under half
+# the old 8GB-per-process value that caused the crash, and since 2
+# concurrent z3 engines (basecase+induction) each get their own
+# independent `ulimit -v` allocation, worst-case combined exposure here
+# is ~6GB vs the old ~16GB worst case.
 
 _SVA_PATTERN = re.compile(
     r'\bassert\s+property\s*\(|\bassume\s+property\s*\(|\bcover\s+property\s*\('

@@ -6,6 +6,17 @@ import concurrent.futures
 from pathlib import Path
 from .common import C, Dashboard, LECMetrics, PILLAR_ICONS, run_with_timeout as _run
 
+# See p2_formal.py's `_ULIMIT_V_KB` for the full history. 2GB, applied to
+# every yosys/sby invocation in this file — including the raw `yosys
+# {ys_file}` sequential-LEC fallback below, which previously had NO
+# memory cap at all (only the 300s wall-clock timeout), and was caught
+# growing uncapped (1.2GB -> 1.5GB in 8s, climbing) during a live
+# fpu_axi_periph re-verification run alongside a concurrent formal proof
+# — pillar.py's own wave-based parallelism can run P2 Formal and P7 LEC
+# simultaneously, so an uncapped process here compounds directly with
+# whatever P2's z3 engines are already using.
+_ULIMIT_V_KB = 2 * 1024 * 1024  # 2GB
+
 
 def _find_cell_verilog(flow) -> Path | None:
     """Locate sky130 full behavioral Verilog for LEC flatten / SBY cell expansion."""
@@ -75,7 +86,7 @@ sat -verify -prove-asserts miter
 
     try:
         result = _run(
-            f"yosys {ys_file.name} > {ys_log.name} 2>&1",
+            f"ulimit -v {_ULIMIT_V_KB} 2>/dev/null; yosys {ys_file.name} > {ys_log.name} 2>&1",
             timeout=120, cwd=build_dir)
         log_text = ys_log.read_text(errors='replace')
     except subprocess.TimeoutExpired:
@@ -252,7 +263,7 @@ def _run_sby_lec(flow, cell_v, stubs_v, synth_v, sta_dir, sv_flag) -> tuple[str,
     try:
         with open(sby_log, "w") as f:
             _run(
-                f"ulimit -v {2 * 1024 * 1024} 2>/dev/null; sby -f {sby_file}",
+                f"ulimit -v {_ULIMIT_V_KB} 2>/dev/null; sby -f {sby_file}",
                 timeout=180, cwd=flow.root, stdout=f, stderr=f)
     except subprocess.TimeoutExpired:
         with open(sby_log, "a") as f:
@@ -468,9 +479,20 @@ equiv_status -assert;
     # never converges on register-file/FIFO-heavy sequential designs — it
     # runs on every such IP's LEC step, every time, with nothing to stop it
     # from spinning indefinitely without this.
+    #
+    # This invocation previously had NO `ulimit -v` at all — only the
+    # wall-clock timeout below. Caught live: on a 1000+ cell design
+    # (fpu_axi_periph), this grew 1.2GB -> 1.5GB in 8 seconds, uncapped,
+    # while pillar.py's wave-based parallelism was ALSO running P2 Formal
+    # concurrently (its own z3 engines, separately capped) — an uncapped
+    # process here compounds directly with whatever else is running. This
+    # is the exact non-convergent sequential-LEC case that's already
+    # accepted as a documented WARN (see feedback-lec-sequential-warn), so
+    # there's no downside to capping it — it was never going to converge
+    # either way.
     try:
         with open(lec_log, "w") as f:
-            _run(f"yosys {ys_file}",
+            _run(f"ulimit -v {_ULIMIT_V_KB} 2>/dev/null; yosys {ys_file}",
                  timeout=300, cwd=flow.root, stdout=f, stderr=f)
     except subprocess.TimeoutExpired:
         with open(lec_log, "a") as f:

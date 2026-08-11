@@ -247,66 +247,93 @@ module uart_ctrl #(
     // -------------------------------------------------------------------------
     // Formal verification properties
     // -------------------------------------------------------------------------
+    // Written as immediate assertions (`assert(...)`/`cover(...)` inside
+    // clocked always blocks), NOT SVA `assert property`/`property...
+    // endproperty`/`inside {...}`. This repo's open-source Yosys build
+    // (no Verific) cannot parse any of that — confirmed directly; this
+    // file's original SVA formal block never actually ran (the .sby
+    // hard-errored on `sby -f`), and its dashboard "PASS" was checkpoint
+    // carryover, not a real proof. See CLAUDE.md "Formal verification
+    // idioms" and project memory feedback_formal_sby for the full story.
+    // Uses `initial assume(!rst_n)`-equivalent gating directly on the
+    // CURRENT cycle's PRESETn (no derived "was ever reset" latch needed
+    // — every property here only reads combinational/registered state
+    // that's already valid the same cycle PRESETn deasserts).
 `ifdef FORMAL
+    initial assume(!PRESETn);
+
     // F1: PREADY only during ACCESS phase (PENABLE must be high)
-    property apb_pready_valid;
-        @(posedge PCLK) disable iff (!PRESETn)
-        PREADY |-> PENABLE;
-    endproperty
-    assert_apb_pready: assert property (apb_pready_valid);
+    always_comb begin
+        if (PRESETn) assert (!PREADY || PENABLE);
+    end
 
     // F2: No spurious write when PENABLE is low
-    property no_write_on_setup;
-        @(posedge PCLK) disable iff (!PRESETn)
-        (PSEL && !PENABLE) |-> !apb_wr;
-    endproperty
-    assert_no_write_setup: assert property (no_write_on_setup);
+    always_comb begin
+        if (PRESETn) assert (!(PSEL && !PENABLE) || !apb_wr);
+    end
 
     // F3: TX serial line idles high when TX FSM is idle
-    property tx_idles_high;
-        @(posedge PCLK) disable iff (!PRESETn)
-        (u_tx.state == u_tx.TX_IDLE) |-> tx_int;
-    endproperty
-    assert_tx_idle: assert property (tx_idles_high);
+    always_comb begin
+        if (PRESETn) assert (!(u_tx.state == u_tx.TX_IDLE) || tx_int);
+    end
 
-    // F4: TX FSM never reaches an illegal encoding
-    property tx_state_valid;
-        @(posedge PCLK) disable iff (!PRESETn)
-        u_tx.state inside {u_tx.TX_IDLE, u_tx.TX_START,
-                           u_tx.TX_DATA, u_tx.TX_PARITY, u_tx.TX_STOP};
-    endproperty
-    assert_tx_state: assert property (tx_state_valid);
+    // F4: TX FSM never reaches an illegal encoding.
+    // `inside {...}` isn't supported either — spelled out as an OR.
+    always_comb begin
+        if (PRESETn) assert (
+            u_tx.state == u_tx.TX_IDLE   || u_tx.state == u_tx.TX_START ||
+            u_tx.state == u_tx.TX_DATA   || u_tx.state == u_tx.TX_PARITY ||
+            u_tx.state == u_tx.TX_STOP
+        );
+    end
 
     // F5: RX FSM never reaches an illegal encoding
-    property rx_state_valid;
-        @(posedge PCLK) disable iff (!PRESETn)
-        u_rx.state inside {u_rx.RX_IDLE, u_rx.RX_START,
-                           u_rx.RX_DATA, u_rx.RX_PARITY, u_rx.RX_STOP};
-    endproperty
-    assert_rx_state: assert property (rx_state_valid);
+    always_comb begin
+        if (PRESETn) assert (
+            u_rx.state == u_rx.RX_IDLE   || u_rx.state == u_rx.RX_START ||
+            u_rx.state == u_rx.RX_DATA   || u_rx.state == u_rx.RX_PARITY ||
+            u_rx.state == u_rx.RX_STOP
+        );
+    end
 
     // F6: Loopback — tx pad feeds rx input when CTRL[5]=1
-    property loopback_wired;
-        @(posedge PCLK) disable iff (!PRESETn)
-        loopback |-> (rx_in == tx_int);
-    endproperty
-    assert_loopback: assert property (loopback_wired);
+    always_comb begin
+        if (PRESETn) assert (!loopback || (rx_in == tx_int));
+    end
 
     // F7: TX FIFO push only when not full
-    property tx_fifo_no_overflow;
-        @(posedge PCLK) disable iff (!PRESETn)
-        (tx_push && u_tx_fifo.full) |-> 1'b0;
-    endproperty
-    assert_tx_fifo_nof: assert property (tx_fifo_no_overflow);
+    always_comb begin
+        if (PRESETn) assert (!(tx_push && u_tx_fifo.full));
+    end
 
-    // Cover: TX FSM traverses a complete frame (IDLE→START→DATA→STOP→IDLE)
-    cover_tx_frame: cover property (
-        @(posedge PCLK) disable iff (!PRESETn)
-        (u_tx.state == u_tx.TX_IDLE) ##1
-        (u_tx.state == u_tx.TX_START) ##[1:200]
-        (u_tx.state == u_tx.TX_STOP)  ##[1:20]
-        (u_tx.state == u_tx.TX_IDLE)
-    );
+    // Cover: TX FSM traverses a complete frame, in order:
+    // IDLE -> START -> STOP -> IDLE. Rebuilt from an SVA
+    // `##1 ... ##[1:200] ... ##[1:20] ...` delay-range sequence (also not
+    // parseable here) into an explicit progress tracker — a cover goal
+    // only needs to demonstrate the ordered sequence is reachable, not
+    // reproduce the original's exact cycle-count bounds, which aren't
+    // meaningful for a reachability check anyway.
+    typedef enum logic [1:0] {
+        FRAME_WAIT_START = 2'd0,
+        FRAME_WAIT_STOP  = 2'd1,
+        FRAME_WAIT_IDLE  = 2'd2
+    } frame_track_e;
+    frame_track_e frame_track_q;
+    always_ff @(posedge PCLK or negedge PRESETn) begin
+        if (!PRESETn) begin
+            frame_track_q <= FRAME_WAIT_START;
+        end else begin
+            case (frame_track_q)
+                FRAME_WAIT_START: if (u_tx.state == u_tx.TX_START) frame_track_q <= FRAME_WAIT_STOP;
+                FRAME_WAIT_STOP:  if (u_tx.state == u_tx.TX_STOP)  frame_track_q <= FRAME_WAIT_IDLE;
+                FRAME_WAIT_IDLE:  if (u_tx.state == u_tx.TX_IDLE)  frame_track_q <= FRAME_WAIT_START;
+                default: frame_track_q <= FRAME_WAIT_START;
+            endcase
+        end
+    end
+    always_comb begin
+        cover (frame_track_q == FRAME_WAIT_IDLE && u_tx.state == u_tx.TX_IDLE);
+    end
 `endif
 
 endmodule

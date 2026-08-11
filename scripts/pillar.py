@@ -16,7 +16,8 @@ from typing import Dict, List, Optional, Tuple
 from pillars.common import (C, PILLAR_ICONS, PILLAR_NAMES, Dashboard,
                              AllPillarMetrics, LintMetrics, FormalMetrics,
                              FunctionalMetrics, SimMetrics, CoverageMetrics,
-                             SynthMetrics, LECMetrics, STAMetrics)
+                             SynthMetrics, LECMetrics, STAMetrics,
+                             run_with_timeout as _run)
 from pillars import (p1_lint, p2_formal, p3_functional, p4_sim,
                      p5_coverage, p6_synth, p7_lec, p8_sta_gls, p9_upf)
 
@@ -462,9 +463,32 @@ class PillarFlow:
                               cwd=cwd or self.root)
 
     def run_logged(self, cmd: str, log_file: Path, step_name: str,
-                   cwd: Path = None) -> bool:
-        """Run cmd, return True on success. Never exits — callers decide."""
-        result = subprocess.run(cmd, shell=True, cwd=cwd or self.root)
+                   cwd: Path = None, timeout: float = 300,
+                   ulimit_v_kb: Optional[int] = None) -> bool:
+        """Run cmd, return True on success. Never exits — callers decide.
+
+        Was a bare `subprocess.run(cmd, shell=True, cwd=...)` with NO
+        timeout and NO memory cap at all -- used for P6 Synthesis (yosys/
+        ABC), P3 Functional and P4 Simulation (iverilog/Verilator compile
+        + run), and UVM test compilation. A hang or runaway memory growth
+        in any of these had nothing to stop it. Caught live: a separate,
+        already-capped `yosys` invocation in p7_lec.py grew uncapped
+        during a real re-verification run; this helper had the same
+        exposure with no cap whatsoever. Default 300s timeout (generous —
+        these are compile/synth steps, not open-ended SMT search) via
+        `run_with_timeout` for proper process-group cleanup on timeout
+        (no orphaned children, matching every other tool invocation in
+        this flow). `ulimit_v_kb` is opt-in per caller, not blanket,
+        since Verilator/cocotb test compiles can legitimately need more
+        headroom than a search-based tool.
+        """
+        prefix = f"ulimit -v {ulimit_v_kb} 2>/dev/null; " if ulimit_v_kb else ""
+        try:
+            result = _run(f"{prefix}{cmd}", timeout=timeout, cwd=cwd or self.root)
+        except subprocess.TimeoutExpired:
+            if self.verbose:
+                print(f"  {C.dim(f'  [{step_name}] exceeded {timeout}s wall-clock limit (process group killed)')}")
+            return False
         if result.returncode != 0 and self.verbose:
             print(f"  {C.dim(f'  [{step_name}] exit {result.returncode}')}")
         return result.returncode == 0

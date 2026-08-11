@@ -70,7 +70,7 @@ def run(flow) -> str:
     print(f"     {C.info('▶')} Synthesizing with Yosys ({pdk_name}, TT corner)...")
     ok = flow.run_logged(
         f"yosys {synth_ys} > {synth_log} 2>&1",
-        synth_log, "Synthesis")
+        synth_log, "Synthesis", ulimit_v_kb=2 * 1024 * 1024)
 
     if not ok:
         print(f"  {C.err('❌ Synthesis FAIL')} — see {synth_log}")
