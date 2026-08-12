@@ -1,0 +1,18 @@
+[options]
+mode cover
+depth 8
+
+[engines]
+smtbmc boolector
+
+[script]
+read_verilog -sv -D FORMAL rv32i_core_formal_stub.sv
+read_verilog -sv -D FORMAL rv32i_core.sv rv32i_decoder.sv rv32i_imm_gen.sv rv32i_ctrl_decode.sv
+prep -top rv32i_core
+
+[files]
+rv32i_core_formal_stub.sv
+../rtl/rv32i_core.sv
+../rtl/rv32i_decoder.sv
+../rtl/rv32i_imm_gen.sv
+../rtl/rv32i_ctrl_decode.sv

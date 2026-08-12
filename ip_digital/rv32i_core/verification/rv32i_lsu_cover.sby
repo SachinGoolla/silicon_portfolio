@@ -1,0 +1,13 @@
+[options]
+mode cover
+depth 8
+
+[engines]
+smtbmc boolector
+
+[script]
+read_verilog -sv -D FORMAL rv32i_lsu.sv
+prep -top rv32i_lsu
+
+[files]
+../rtl/rv32i_lsu.sv

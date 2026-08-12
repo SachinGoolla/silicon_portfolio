@@ -1,0 +1,20 @@
+[options]
+# All properties here are purely same-cycle structural relationships
+# (rs1_data_o/rs2_data_o vs this cycle's regs_q/rd_we_i/rd_addr_i/
+# rd_data_i) -- no $past/prev_q, no dependence on write history. The mux
+# logic that makes them true is the same regardless of what regs_q
+# happens to hold, so a shallow BMC already covers every case; k-induction
+# (mode prove) was overkill here and hung the solver on the 31x32-bit
+# register-array state space for >2 minutes with no result.
+mode bmc
+depth 2
+
+[engines]
+smtbmc z3
+
+[script]
+read_verilog -sv -D FORMAL rv32i_regfile.sv
+prep -top rv32i_regfile
+
+[files]
+../rtl/rv32i_regfile.sv

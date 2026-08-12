@@ -1,0 +1,13 @@
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc z3
+
+[script]
+read_verilog -sv -D FORMAL rv32i_alu_compare.sv
+prep -top rv32i_alu_compare
+
+[files]
+../rtl/rv32i_alu_compare.sv

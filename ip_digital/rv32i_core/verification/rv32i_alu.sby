@@ -1,0 +1,18 @@
+[options]
+# Mux-select correctness only -- rv32i_alu_arith/_logic/_shift/_compare are
+# anyseq-stubbed (rv32i_alu_formal_stub.sv), each already signed off
+# standalone by its own .sby. Keeps this proof to the top's own logic.
+mode bmc
+depth 1
+
+[engines]
+smtbmc z3
+
+[script]
+read_verilog -sv -D FORMAL rv32i_alu.sv
+read_verilog -sv rv32i_alu_formal_stub.sv
+prep -top rv32i_alu
+
+[files]
+../rtl/rv32i_alu.sv
+rv32i_alu_formal_stub.sv
