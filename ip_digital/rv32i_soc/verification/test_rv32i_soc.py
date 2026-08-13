@@ -8,11 +8,15 @@ peripheral, the address decoder -- is real internal RTL. This test only
 drives clk/rst_n and polls, exactly like tb_rv32i_soc.sv does; there is no
 custom bus model to write.
 
-CLK_FREQ/BAUD_RATE are overridden via cocotb_sim.mk (see that file) so
+No CLK_FREQ/BAUD_RATE override is needed here -- rv32i_soc.sv's own
+default parameters are already the fast-sim values (1600/100), so
 program.s's UART TX/RX polling loops don't cost thousands of real-baud
-cycles under cocotb's default (this Makefile has no other override
-mechanism -- p3_functional.py instantiates TOPLEVEL at its own default
-parameter values otherwise).
+cycles even though p3_functional.py instantiates TOPLEVEL at its
+default parameter values with no override mechanism of its own. See
+rv32i_soc.sv's header comment for why the defaults are fast-sim values
+directly rather than a per-pillar override: a synthesized netlist has
+no parameters left to override, so P8 GLS needs the same fast timing
+baked in as the default, not applied at instantiation.
 
 Golden values are read by hierarchically peeking dut.u_ram.reg_q -- the
 RAM's internal register-file array (axi_lite_slave.sv's own reg_q,
