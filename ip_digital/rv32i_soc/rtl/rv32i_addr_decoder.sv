@@ -1,14 +1,15 @@
-// rv32i_addr_decoder.sv — AXI4-Lite address decoder, 1 master -> 3 slaves.
+// rv32i_addr_decoder.sv — AXI4-Lite address decoder, 1 master -> 4 slaves.
 //
-// Demuxes a single AXI4-Lite master port (rv32i_core's LSU) to three
-// memory-mapped slaves: a data RAM, uart_axi_periph, and fpu_axi_periph.
-// Unmapped addresses get a synthesized DECERR response (no real slave
-// exists to generate one).
+// Demuxes a single AXI4-Lite master port (rv32i_core's LSU) to four
+// memory-mapped slaves: a data RAM, uart_axi_periph, fpu_axi_periph, and
+// mac_tile_axi (Phase 2's systolic MAC coprocessor). Unmapped addresses get
+// a synthesized DECERR response (no real slave exists to generate one).
 //
 // Address map (4KB regions, decoded on the FULL addr[31:12] page field):
 //   0x0000_0000 - 0x0000_03FF : RAM  (axi_lite_slave, NUM_REGS=256, 1KB)
 //   0x0000_1000 - 0x0000_10FF : UART (uart_axi_periph, 256B)
 //   0x0000_2000 - 0x0000_20FF : FPU  (fpu_axi_periph, 256B)
+//   0x0000_3000 - 0x0000_30FF : MAC  (mac_tile_axi, 256B)
 //   anything else             : DECERR (bresp/rresp = 2'b11)
 // Each slave's byte range above is its REAL, distinctly-addressable size
 // (RAM/UART/FPU_ADDR_WIDTH), not the full 4KB page -- an address inside a
@@ -40,7 +41,8 @@ module rv32i_addr_decoder #(
     parameter int ADDR_WIDTH     = 32,
     parameter int RAM_ADDR_WIDTH = 10,  // 256 words
     parameter int UART_ADDR_WIDTH = 8,  // 64 words
-    parameter int FPU_ADDR_WIDTH  = 8   // 64 words
+    parameter int FPU_ADDR_WIDTH  = 8,  // 64 words
+    parameter int MAC_ADDR_WIDTH  = 8   // 64 words
 ) (
     input  logic                        clk,
     input  logic                        rst_n,
@@ -131,19 +133,41 @@ module rv32i_addr_decoder #(
     input  logic                        fpu_rvalid_i,
     output logic                        fpu_rready_o,
     input  logic [DATA_WIDTH-1:0]       fpu_rdata_i,
-    input  logic [1:0]                  fpu_rresp_i
+    input  logic [1:0]                  fpu_rresp_i,
+
+    // ---------------- MAC slave port ----------------
+    output logic                        mac_awvalid_o,
+    input  logic                        mac_awready_i,
+    output logic [MAC_ADDR_WIDTH-1:0]   mac_awaddr_o,
+    output logic [2:0]                  mac_awprot_o,
+    output logic                        mac_wvalid_o,
+    input  logic                        mac_wready_i,
+    output logic [DATA_WIDTH-1:0]       mac_wdata_o,
+    output logic [(DATA_WIDTH/8)-1:0]   mac_wstrb_o,
+    input  logic                        mac_bvalid_i,
+    output logic                        mac_bready_o,
+    input  logic [1:0]                  mac_bresp_i,
+    output logic                        mac_arvalid_o,
+    input  logic                        mac_arready_i,
+    output logic [MAC_ADDR_WIDTH-1:0]   mac_araddr_o,
+    output logic [2:0]                  mac_arprot_o,
+    input  logic                        mac_rvalid_i,
+    output logic                        mac_rready_o,
+    input  logic [DATA_WIDTH-1:0]       mac_rdata_i,
+    input  logic [1:0]                  mac_rresp_i
 );
 
     localparam logic [19:0] RAM_PAGE  = 20'h00000;
     localparam logic [19:0] UART_PAGE = 20'h00001;
     localparam logic [19:0] FPU_PAGE  = 20'h00002;
+    localparam logic [19:0] MAC_PAGE  = 20'h00003;
 
-    typedef enum logic [1:0] {SEL_RAM, SEL_UART, SEL_FPU, SEL_NONE} sel_e;
+    typedef enum logic [2:0] {SEL_RAM, SEL_UART, SEL_FPU, SEL_MAC, SEL_NONE} sel_e;
 
     // -----------------------------------------------------------------
     // Write path
     // -----------------------------------------------------------------
-    logic [1:0] wsel_q;
+    logic [2:0] wsel_q;
     logic wbusy_q;
 
     // Icarus rejects a part-select used directly as a case expression
@@ -159,13 +183,15 @@ module rv32i_addr_decoder #(
     wire ram_in_bounds  = (awaddr_i[11:RAM_ADDR_WIDTH]  == '0);
     wire uart_in_bounds = (awaddr_i[11:UART_ADDR_WIDTH] == '0);
     wire fpu_in_bounds  = (awaddr_i[11:FPU_ADDR_WIDTH]  == '0);
+    wire mac_in_bounds  = (awaddr_i[11:MAC_ADDR_WIDTH]  == '0);
 
-    logic [1:0] wsel_decode;
+    logic [2:0] wsel_decode;
     always_comb begin
         unique case (awaddr_page)
             RAM_PAGE:  wsel_decode = ram_in_bounds  ? SEL_RAM  : SEL_NONE;
             UART_PAGE: wsel_decode = uart_in_bounds ? SEL_UART : SEL_NONE;
             FPU_PAGE:  wsel_decode = fpu_in_bounds  ? SEL_FPU  : SEL_NONE;
+            MAC_PAGE:  wsel_decode = mac_in_bounds  ? SEL_MAC  : SEL_NONE;
             default:   wsel_decode = SEL_NONE;
         endcase
     end
@@ -173,10 +199,10 @@ module rv32i_addr_decoder #(
     // a ternary of two enum-typed operands into an enum-typed target, but
     // Yosys's frontend rejects that cast's syntax outright (`sel_e'(...)`
     // -> "unexpected TOK_USER_TYPE") -- no cast satisfies both. Comparing
-    // a plain 2-bit vector against the sel_e enum constants below works
+    // a plain 3-bit vector against the sel_e enum constants below works
     // identically (SV compares enum literals by underlying value) and
     // sidesteps the conflict entirely.
-    logic [1:0] wsel_active;
+    logic [2:0] wsel_active;
     always_comb wsel_active = wbusy_q ? wsel_q : wsel_decode;
 
     // DECERR write buffer — independent AW/W tracking, commit-based B gen.
@@ -187,31 +213,39 @@ module rv32i_addr_decoder #(
     assign ram_awvalid_o  = awvalid_i && (wsel_active == SEL_RAM);
     assign uart_awvalid_o = awvalid_i && (wsel_active == SEL_UART);
     assign fpu_awvalid_o  = awvalid_i && (wsel_active == SEL_FPU);
+    assign mac_awvalid_o  = awvalid_i && (wsel_active == SEL_MAC);
     assign ram_awaddr_o   = awaddr_i[RAM_ADDR_WIDTH-1:0];
     assign uart_awaddr_o  = awaddr_i[UART_ADDR_WIDTH-1:0];
     assign fpu_awaddr_o   = awaddr_i[FPU_ADDR_WIDTH-1:0];
+    assign mac_awaddr_o   = awaddr_i[MAC_ADDR_WIDTH-1:0];
     assign ram_awprot_o   = awprot_i;
     assign uart_awprot_o  = awprot_i;
     assign fpu_awprot_o   = awprot_i;
+    assign mac_awprot_o   = awprot_i;
 
     assign ram_wvalid_o  = wvalid_i && (wsel_active == SEL_RAM);
     assign uart_wvalid_o = wvalid_i && (wsel_active == SEL_UART);
     assign fpu_wvalid_o  = wvalid_i && (wsel_active == SEL_FPU);
+    assign mac_wvalid_o  = wvalid_i && (wsel_active == SEL_MAC);
     assign ram_wdata_o   = wdata_i;
     assign uart_wdata_o  = wdata_i;
     assign fpu_wdata_o   = wdata_i;
+    assign mac_wdata_o   = wdata_i;
     assign ram_wstrb_o   = wstrb_i;
     assign uart_wstrb_o  = wstrb_i;
     assign fpu_wstrb_o   = wstrb_i;
+    assign mac_wstrb_o   = wstrb_i;
 
     assign awready_o = (wsel_active == SEL_RAM)  ? ram_awready_i  :
                         (wsel_active == SEL_UART) ? uart_awready_i :
                         (wsel_active == SEL_FPU)  ? fpu_awready_i  :
+                        (wsel_active == SEL_MAC)  ? mac_awready_i  :
                         !decerr_aw_pend_q;
 
     assign wready_o = (wsel_active == SEL_RAM)  ? ram_wready_i  :
                        (wsel_active == SEL_UART) ? uart_wready_i :
                        (wsel_active == SEL_FPU)  ? fpu_wready_i  :
+                       (wsel_active == SEL_MAC)  ? mac_wready_i  :
                        !decerr_w_pend_q;
 
     // B-channel routing uses the LATCHED select (wsel_q, gated by wbusy_q)
@@ -225,16 +259,19 @@ module rv32i_addr_decoder #(
     assign bvalid_o = (wsel_q == SEL_RAM)  ? (wbusy_q && ram_bvalid_i)  :
                        (wsel_q == SEL_UART) ? (wbusy_q && uart_bvalid_i) :
                        (wsel_q == SEL_FPU)  ? (wbusy_q && fpu_bvalid_i)  :
+                       (wsel_q == SEL_MAC)  ? (wbusy_q && mac_bvalid_i)  :
                        decerr_bvalid_q;
 
     assign bresp_o = (wsel_q == SEL_RAM)  ? ram_bresp_i  :
                       (wsel_q == SEL_UART) ? uart_bresp_i :
                       (wsel_q == SEL_FPU)  ? fpu_bresp_i  :
+                      (wsel_q == SEL_MAC)  ? mac_bresp_i  :
                       2'b11;
 
     assign ram_bready_o  = bready_i && wbusy_q && (wsel_q == SEL_RAM);
     assign uart_bready_o = bready_i && wbusy_q && (wsel_q == SEL_UART);
     assign fpu_bready_o  = bready_i && wbusy_q && (wsel_q == SEL_FPU);
+    assign mac_bready_o  = bready_i && wbusy_q && (wsel_q == SEL_MAC);
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -276,7 +313,7 @@ module rv32i_addr_decoder #(
     // -----------------------------------------------------------------
     // Read path
     // -----------------------------------------------------------------
-    logic [1:0] rsel_q;
+    logic [2:0] rsel_q;
     logic rbusy_q;
 
     wire [19:0] araddr_page = araddr_i[31:12];
@@ -284,17 +321,19 @@ module rv32i_addr_decoder #(
     wire ram_ar_in_bounds  = (araddr_i[11:RAM_ADDR_WIDTH]  == '0);
     wire uart_ar_in_bounds = (araddr_i[11:UART_ADDR_WIDTH] == '0);
     wire fpu_ar_in_bounds  = (araddr_i[11:FPU_ADDR_WIDTH]  == '0);
+    wire mac_ar_in_bounds  = (araddr_i[11:MAC_ADDR_WIDTH]  == '0);
 
-    logic [1:0] rsel_decode;
+    logic [2:0] rsel_decode;
     always_comb begin
         unique case (araddr_page)
             RAM_PAGE:  rsel_decode = ram_ar_in_bounds  ? SEL_RAM  : SEL_NONE;
             UART_PAGE: rsel_decode = uart_ar_in_bounds ? SEL_UART : SEL_NONE;
             FPU_PAGE:  rsel_decode = fpu_ar_in_bounds  ? SEL_FPU  : SEL_NONE;
+            MAC_PAGE:  rsel_decode = mac_ar_in_bounds  ? SEL_MAC  : SEL_NONE;
             default:   rsel_decode = SEL_NONE;
         endcase
     end
-    logic [1:0] rsel_active;
+    logic [2:0] rsel_active;
     always_comb rsel_active = rbusy_q ? rsel_q : rsel_decode;
 
     logic decerr_rvalid_q;
@@ -302,16 +341,20 @@ module rv32i_addr_decoder #(
     assign ram_arvalid_o  = arvalid_i && (rsel_active == SEL_RAM);
     assign uart_arvalid_o = arvalid_i && (rsel_active == SEL_UART);
     assign fpu_arvalid_o  = arvalid_i && (rsel_active == SEL_FPU);
+    assign mac_arvalid_o  = arvalid_i && (rsel_active == SEL_MAC);
     assign ram_araddr_o   = araddr_i[RAM_ADDR_WIDTH-1:0];
     assign uart_araddr_o  = araddr_i[UART_ADDR_WIDTH-1:0];
     assign fpu_araddr_o   = araddr_i[FPU_ADDR_WIDTH-1:0];
+    assign mac_araddr_o   = araddr_i[MAC_ADDR_WIDTH-1:0];
     assign ram_arprot_o   = arprot_i;
     assign uart_arprot_o  = arprot_i;
     assign fpu_arprot_o   = arprot_i;
+    assign mac_arprot_o   = arprot_i;
 
     assign arready_o = (rsel_active == SEL_RAM)  ? ram_arready_i  :
                         (rsel_active == SEL_UART) ? uart_arready_i :
                         (rsel_active == SEL_FPU)  ? fpu_arready_i  :
+                        (rsel_active == SEL_MAC)  ? mac_arready_i  :
                         !(rbusy_q && rsel_q == SEL_NONE);
 
     // Same fix as the B channel: gate real-slave R routing on the latched
@@ -319,21 +362,25 @@ module rv32i_addr_decoder #(
     assign rvalid_o = (rsel_q == SEL_RAM)  ? (rbusy_q && ram_rvalid_i)  :
                        (rsel_q == SEL_UART) ? (rbusy_q && uart_rvalid_i) :
                        (rsel_q == SEL_FPU)  ? (rbusy_q && fpu_rvalid_i)  :
+                       (rsel_q == SEL_MAC)  ? (rbusy_q && mac_rvalid_i)  :
                        decerr_rvalid_q;
 
     assign rdata_o = (rsel_q == SEL_RAM)  ? ram_rdata_i  :
                       (rsel_q == SEL_UART) ? uart_rdata_i :
                       (rsel_q == SEL_FPU)  ? fpu_rdata_i  :
+                      (rsel_q == SEL_MAC)  ? mac_rdata_i  :
                       '0;
 
     assign rresp_o = (rsel_q == SEL_RAM)  ? ram_rresp_i  :
                       (rsel_q == SEL_UART) ? uart_rresp_i :
                       (rsel_q == SEL_FPU)  ? fpu_rresp_i  :
+                      (rsel_q == SEL_MAC)  ? mac_rresp_i  :
                       2'b11;
 
     assign ram_rready_o  = rready_i && rbusy_q && (rsel_q == SEL_RAM);
     assign uart_rready_o = rready_i && rbusy_q && (rsel_q == SEL_UART);
     assign fpu_rready_o  = rready_i && rbusy_q && (rsel_q == SEL_FPU);
+    assign mac_rready_o  = rready_i && rbusy_q && (rsel_q == SEL_MAC);
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -388,35 +435,40 @@ module rv32i_addr_decoder #(
         end
     end
 
-    // The 3 real slaves are each proven standalone (axi_lite_slave.sv's own
-    // formal block, inherited by fpu_axi_periph/uart_axi_periph) to hold
-    // their bvalid_o/rvalid_o high until the matching ready fires (AXI4-Lite
-    // VALID-sticky, §A3.2.1). In THIS standalone proof, ram_bvalid_i/
-    // uart_bvalid_i/fpu_bvalid_i/*_rvalid_i are free (unconstrained) formal
-    // inputs -- without assuming the same discipline on them, the solver can
-    // pick a slave input trace that drops VALID mid-transaction, producing a
-    // counterexample against a real slave's own guarantee, not a decoder
-    // bug. Mirrors rv32i_lsu.sv's own note: "assumes exactly this discipline
-    // from whatever [slave/master] it's attached to."
+    // The 4 real slaves are each proven standalone (axi_lite_slave.sv's own
+    // formal block, inherited by fpu_axi_periph/uart_axi_periph/
+    // mac_tile_axi) to hold their bvalid_o/rvalid_o high until the matching
+    // ready fires (AXI4-Lite VALID-sticky, §A3.2.1). In THIS standalone
+    // proof, ram_bvalid_i/uart_bvalid_i/fpu_bvalid_i/mac_bvalid_i/*_rvalid_i
+    // are free (unconstrained) formal inputs -- without assuming the same
+    // discipline on them, the solver can pick a slave input trace that drops
+    // VALID mid-transaction, producing a counterexample against a real
+    // slave's own guarantee, not a decoder bug. Mirrors rv32i_lsu.sv's own
+    // note: "assumes exactly this discipline from whatever [slave/master]
+    // it's attached to."
     logic f_ram_bvalid_d, f_ram_bready_d, f_uart_bvalid_d, f_uart_bready_d;
-    logic f_fpu_bvalid_d, f_fpu_bready_d;
+    logic f_fpu_bvalid_d, f_fpu_bready_d, f_mac_bvalid_d, f_mac_bready_d;
     logic f_ram_rvalid_d, f_ram_rready_d, f_uart_rvalid_d, f_uart_rready_d;
-    logic f_fpu_rvalid_d, f_fpu_rready_d;
+    logic f_fpu_rvalid_d, f_fpu_rready_d, f_mac_rvalid_d, f_mac_rready_d;
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             f_ram_bvalid_d  <= 1'b0; f_ram_bready_d  <= 1'b0;
             f_uart_bvalid_d <= 1'b0; f_uart_bready_d <= 1'b0;
             f_fpu_bvalid_d  <= 1'b0; f_fpu_bready_d  <= 1'b0;
+            f_mac_bvalid_d  <= 1'b0; f_mac_bready_d  <= 1'b0;
             f_ram_rvalid_d  <= 1'b0; f_ram_rready_d  <= 1'b0;
             f_uart_rvalid_d <= 1'b0; f_uart_rready_d <= 1'b0;
             f_fpu_rvalid_d  <= 1'b0; f_fpu_rready_d  <= 1'b0;
+            f_mac_rvalid_d  <= 1'b0; f_mac_rready_d  <= 1'b0;
         end else begin
             f_ram_bvalid_d  <= ram_bvalid_i;  f_ram_bready_d  <= ram_bready_o;
             f_uart_bvalid_d <= uart_bvalid_i; f_uart_bready_d <= uart_bready_o;
             f_fpu_bvalid_d  <= fpu_bvalid_i;  f_fpu_bready_d  <= fpu_bready_o;
+            f_mac_bvalid_d  <= mac_bvalid_i;  f_mac_bready_d  <= mac_bready_o;
             f_ram_rvalid_d  <= ram_rvalid_i;  f_ram_rready_d  <= ram_rready_o;
             f_uart_rvalid_d <= uart_rvalid_i; f_uart_rready_d <= uart_rready_o;
             f_fpu_rvalid_d  <= fpu_rvalid_i;  f_fpu_rready_d  <= fpu_rready_o;
+            f_mac_rvalid_d  <= mac_rvalid_i;  f_mac_rready_d  <= mac_rready_o;
         end
     end
     always_comb begin
@@ -424,17 +476,19 @@ module rv32i_addr_decoder #(
             if (f_ram_bvalid_d  && !f_ram_bready_d)  assume(ram_bvalid_i);
             if (f_uart_bvalid_d && !f_uart_bready_d) assume(uart_bvalid_i);
             if (f_fpu_bvalid_d  && !f_fpu_bready_d)  assume(fpu_bvalid_i);
+            if (f_mac_bvalid_d  && !f_mac_bready_d)  assume(mac_bvalid_i);
             if (f_ram_rvalid_d  && !f_ram_rready_d)  assume(ram_rvalid_i);
             if (f_uart_rvalid_d && !f_uart_rready_d) assume(uart_rvalid_i);
             if (f_fpu_rvalid_d  && !f_fpu_rready_d)  assume(fpu_rvalid_i);
+            if (f_mac_rvalid_d  && !f_mac_rready_d)  assume(mac_rvalid_i);
         end
     end
 
     always_comb begin
         if (rst_n) begin
             // Exactly one slave (or none, for DECERR) ever gets awvalid/arvalid.
-            assert($onehot0({ram_awvalid_o, uart_awvalid_o, fpu_awvalid_o}));
-            assert($onehot0({ram_arvalid_o, uart_arvalid_o, fpu_arvalid_o}));
+            assert($onehot0({ram_awvalid_o, uart_awvalid_o, fpu_awvalid_o, mac_awvalid_o}));
+            assert($onehot0({ram_arvalid_o, uart_arvalid_o, fpu_arvalid_o, mac_arvalid_o}));
 
             // DECERR is exact: bresp/rresp == 2'b11 iff the active selection is NONE.
             if (wbusy_q && wsel_q == SEL_NONE) begin
@@ -447,7 +501,10 @@ module rv32i_addr_decoder #(
             // No real slave ever sees a request routed to a different slave's B/R.
             assert(!(ram_bready_o && uart_bready_o));
             assert(!(ram_bready_o && fpu_bready_o));
+            assert(!(ram_bready_o && mac_bready_o));
             assert(!(uart_bready_o && fpu_bready_o));
+            assert(!(uart_bready_o && mac_bready_o));
+            assert(!(fpu_bready_o && mac_bready_o));
         end
     end
 
@@ -472,18 +529,22 @@ module rv32i_addr_decoder #(
             if (awaddr_page == 20'h00000 && ram_in_bounds)   assert(wsel_decode == SEL_RAM);
             if (awaddr_page == 20'h00001 && uart_in_bounds)  assert(wsel_decode == SEL_UART);
             if (awaddr_page == 20'h00002 && fpu_in_bounds)   assert(wsel_decode == SEL_FPU);
-            if (awaddr_page > 20'h00002)                     assert(wsel_decode == SEL_NONE);
+            if (awaddr_page == 20'h00003 && mac_in_bounds)   assert(wsel_decode == SEL_MAC);
+            if (awaddr_page > 20'h00003)                     assert(wsel_decode == SEL_NONE);
             if (awaddr_page == 20'h00000 && !ram_in_bounds)  assert(wsel_decode == SEL_NONE);
             if (awaddr_page == 20'h00001 && !uart_in_bounds) assert(wsel_decode == SEL_NONE);
             if (awaddr_page == 20'h00002 && !fpu_in_bounds)  assert(wsel_decode == SEL_NONE);
+            if (awaddr_page == 20'h00003 && !mac_in_bounds)  assert(wsel_decode == SEL_NONE);
 
             if (araddr_page == 20'h00000 && ram_ar_in_bounds)   assert(rsel_decode == SEL_RAM);
             if (araddr_page == 20'h00001 && uart_ar_in_bounds)  assert(rsel_decode == SEL_UART);
             if (araddr_page == 20'h00002 && fpu_ar_in_bounds)   assert(rsel_decode == SEL_FPU);
-            if (araddr_page > 20'h00002)                        assert(rsel_decode == SEL_NONE);
+            if (araddr_page == 20'h00003 && mac_ar_in_bounds)   assert(rsel_decode == SEL_MAC);
+            if (araddr_page > 20'h00003)                        assert(rsel_decode == SEL_NONE);
             if (araddr_page == 20'h00000 && !ram_ar_in_bounds)  assert(rsel_decode == SEL_NONE);
             if (araddr_page == 20'h00001 && !uart_ar_in_bounds) assert(rsel_decode == SEL_NONE);
             if (araddr_page == 20'h00002 && !fpu_ar_in_bounds)  assert(rsel_decode == SEL_NONE);
+            if (araddr_page == 20'h00003 && !mac_ar_in_bounds)  assert(rsel_decode == SEL_NONE);
         end
     end
 
@@ -512,12 +573,14 @@ module rv32i_addr_decoder #(
         cover(rst_n && ram_bvalid_i && ram_bready_o);              // RAM write reachable
         cover(rst_n && uart_bvalid_i && uart_bready_o);            // UART write reachable
         cover(rst_n && fpu_bvalid_i && fpu_bready_o);              // FPU write reachable
+        cover(rst_n && mac_bvalid_i && mac_bready_o);              // MAC write reachable
 
         // In-page-but-out-of-bounds DECERR is a real, reachable branch,
         // not one the bounds check vacuously eliminates.
         cover(rst_n && awvalid_i && awaddr_page == 20'h00000 && !ram_in_bounds);
         cover(rst_n && awvalid_i && awaddr_page == 20'h00001 && !uart_in_bounds);
         cover(rst_n && awvalid_i && awaddr_page == 20'h00002 && !fpu_in_bounds);
+        cover(rst_n && awvalid_i && awaddr_page == 20'h00003 && !mac_in_bounds);
     end
 `endif
 

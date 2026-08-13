@@ -30,10 +30,14 @@ from cocotb.triggers import Edge, RisingEdge
 RAM_WORD_FPU_RESULT = 0
 RAM_WORD_DONE_MARKER = 1
 RAM_WORD_UART_RX = 2
+RAM_WORD_MAC_RESULT0 = 3
+RAM_WORD_MAC_RESULT0_2ND = 4
 
 EXPECT_FPU_RESULT = 0x40000000    # FADD(1.0, 1.0) = 2.0
 EXPECT_DONE_MARKER = 0xCAFEF00D
 EXPECT_UART_RX = 0x00000041       # 'A', looped back through uart_rx_i<=uart_tx_o
+EXPECT_MAC_RESULT0 = 0x00000005       # W=5*I, A1=[1,2,3,4] via MMIO bridge -> Y[0]=5*1
+EXPECT_MAC_RESULT0_2ND = 0x0000001E   # W=5*I, A2=[6,7,8,9], after RESULT_ACK -> Y[0]=5*6=30
 
 
 def _safe_int(signal):
@@ -113,6 +117,20 @@ async def test_program_runs_to_completion(dut):
                        f"expected 0x{EXPECT_UART_RX:08x}")
     else:
         dut._log.info(f"RAM[{RAM_WORD_UART_RX}] (UART RX loopback) = 0x{got_rx:08x}  OK")
+
+    got_mac = _safe_int(dut.u_ram.reg_q[RAM_WORD_MAC_RESULT0])
+    if got_mac != EXPECT_MAC_RESULT0:
+        errors.append(f"RAM[{RAM_WORD_MAC_RESULT0}] (MAC RESULT0) = 0x{got_mac:08x}, "
+                       f"expected 0x{EXPECT_MAC_RESULT0:08x}")
+    else:
+        dut._log.info(f"RAM[{RAM_WORD_MAC_RESULT0}] (MAC RESULT0) = 0x{got_mac:08x}  OK")
+
+    got_mac2 = _safe_int(dut.u_ram.reg_q[RAM_WORD_MAC_RESULT0_2ND])
+    if got_mac2 != EXPECT_MAC_RESULT0_2ND:
+        errors.append(f"RAM[{RAM_WORD_MAC_RESULT0_2ND}] (MAC RESULT0, 2nd push) = 0x{got_mac2:08x}, "
+                       f"expected 0x{EXPECT_MAC_RESULT0_2ND:08x}")
+    else:
+        dut._log.info(f"RAM[{RAM_WORD_MAC_RESULT0_2ND}] (MAC RESULT0, 2nd push) = 0x{got_mac2:08x}  OK")
 
     assert not errors, "rv32i_soc self-check failed:\n" + "\n".join(errors)
     dut._log.info("test_program_runs_to_completion PASS")

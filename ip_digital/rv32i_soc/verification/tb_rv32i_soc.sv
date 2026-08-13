@@ -1,7 +1,7 @@
 // tb_rv32i_soc.sv — self-checking testbench for rv32i_soc, used by Pillar 4
 // (Verilator sim/coverage) and Pillar 8 (GLS). Instantiates the full SoC
-// (core + address decoder + RAM + UART + FPU peripherals + the real
-// assembled instruction ROM), loops uart_rx_i <= uart_tx_o externally
+// (core + address decoder + RAM + UART + FPU + MAC tile peripherals + the
+// real assembled instruction ROM), loops uart_rx_i <= uart_tx_o externally
 // (matching uart_axi_periph's own TB precedent, tb_uart_axi_periph.sv), and
 // runs verification/program.s to completion. No CLK_FREQ/BAUD_RATE
 // override needed here -- rv32i_soc.sv's own default parameters are
@@ -74,10 +74,14 @@ module tb_rv32i_soc;
     localparam int RAM_WORD_FPU_RESULT = 0;
     localparam int RAM_WORD_DONE_MARKER = 1;
     localparam int RAM_WORD_UART_RX     = 2;
+    localparam int RAM_WORD_MAC_RESULT0 = 3;
+    localparam int RAM_WORD_MAC_RESULT0_2ND = 4;
 
     localparam logic [31:0] EXPECT_FPU_RESULT = 32'h40000000;  // FADD(1.0,1.0)=2.0
     localparam logic [31:0] EXPECT_DONE_MARKER = 32'hCAFEF00D;
     localparam logic [31:0] EXPECT_UART_RX     = 32'h00000041;  // 'A', looped back
+    localparam logic [31:0] EXPECT_MAC_RESULT0 = 32'h00000005;  // W=5*I, A1=[1,2,3,4] -> Y[0]=5*1
+    localparam logic [31:0] EXPECT_MAC_RESULT0_2ND = 32'h0000001E;  // W=5*I, A2=[6,7,8,9] -> Y[0]=5*6=30
 
     initial begin
         errors = 0;
@@ -125,6 +129,24 @@ module tb_rv32i_soc;
             end else begin
                 $display("TB_RV32I_SOC: OK      RAM[%0d] (UART RX loopback) = 32'h%08x",
                           RAM_WORD_UART_RX, u_dut.u_ram.reg_q[RAM_WORD_UART_RX]);
+            end
+
+            if (u_dut.u_ram.reg_q[RAM_WORD_MAC_RESULT0] !== EXPECT_MAC_RESULT0) begin
+                $display("TB_RV32I_SOC: MISMATCH RAM[%0d] (MAC RESULT0) = 32'h%08x, expected 32'h%08x",
+                          RAM_WORD_MAC_RESULT0, u_dut.u_ram.reg_q[RAM_WORD_MAC_RESULT0], EXPECT_MAC_RESULT0);
+                errors = errors + 1;
+            end else begin
+                $display("TB_RV32I_SOC: OK      RAM[%0d] (MAC RESULT0) = 32'h%08x",
+                          RAM_WORD_MAC_RESULT0, u_dut.u_ram.reg_q[RAM_WORD_MAC_RESULT0]);
+            end
+
+            if (u_dut.u_ram.reg_q[RAM_WORD_MAC_RESULT0_2ND] !== EXPECT_MAC_RESULT0_2ND) begin
+                $display("TB_RV32I_SOC: MISMATCH RAM[%0d] (MAC RESULT0, 2nd push) = 32'h%08x, expected 32'h%08x",
+                          RAM_WORD_MAC_RESULT0_2ND, u_dut.u_ram.reg_q[RAM_WORD_MAC_RESULT0_2ND], EXPECT_MAC_RESULT0_2ND);
+                errors = errors + 1;
+            end else begin
+                $display("TB_RV32I_SOC: OK      RAM[%0d] (MAC RESULT0, 2nd push) = 32'h%08x",
+                          RAM_WORD_MAC_RESULT0_2ND, u_dut.u_ram.reg_q[RAM_WORD_MAC_RESULT0_2ND]);
             end
         end
 

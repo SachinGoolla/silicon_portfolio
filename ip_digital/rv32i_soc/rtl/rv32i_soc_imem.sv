@@ -8,14 +8,14 @@ module rv32i_soc_imem (
 
     /* verilator lint_off UNUSEDSIGNAL */
     logic _unused_addr;
-    assign _unused_addr = ^addr_i;  // only addr_i[7:2] indexes the ROM below
+    assign _unused_addr = ^addr_i;  // only addr_i[8:2] indexes the ROM below
     /* verilator lint_on UNUSEDSIGNAL */
 
     // Icarus rejects a part-select used directly as a case expression
     // ("constant selects in always_* processes are not currently
     // supported") -- an explicit intermediate wire avoids it, same fix
     // as imem_stub.sv's/rv32i_lsu.sv's rom_idx/addr_byte_sel.
-    wire [5:0] rom_idx = addr_i[7:2];
+    wire [6:0] rom_idx = addr_i[8:2];
 
     always_comb begin
         unique case (rom_idx)
@@ -53,16 +53,57 @@ module rv32i_soc_imem (
             31: rdata_o = 32'h0115A423;
             32: rdata_o = 32'h00100913;
             33: rdata_o = 32'h0126A623;
-            34: rdata_o = 32'h000039B7;
-            35: rdata_o = 32'h00098993;
-            36: rdata_o = 32'h0000EA37;
-            37: rdata_o = 32'hEADA0A13;
-            38: rdata_o = 32'h0149A023;
-            39: rdata_o = 32'h0009AA83;
-            40: rdata_o = 32'hCAFEFB37;
-            41: rdata_o = 32'h00DB0B13;
-            42: rdata_o = 32'h0165A223;
-            43: rdata_o = 32'h0000006F;
+            34: rdata_o = 32'h00003BB7;
+            35: rdata_o = 32'h000B8B93;
+            36: rdata_o = 32'h00400C13;
+            37: rdata_o = 32'h018BA023;
+            38: rdata_o = 32'h00500C93;
+            39: rdata_o = 32'h019BA423;
+            40: rdata_o = 32'h50000C93;
+            41: rdata_o = 32'h019BA623;
+            42: rdata_o = 32'h00050CB7;
+            43: rdata_o = 32'h000C8C93;
+            44: rdata_o = 32'h019BA823;
+            45: rdata_o = 32'h05000CB7;
+            46: rdata_o = 32'h000C8C93;
+            47: rdata_o = 32'h019BAA23;
+            48: rdata_o = 32'h00500C13;
+            49: rdata_o = 32'h018BA023;
+            50: rdata_o = 32'h004BAD03;
+            51: rdata_o = 32'h001D7D93;
+            52: rdata_o = 32'hFE0D8CE3;
+            53: rdata_o = 32'h00600C13;
+            54: rdata_o = 32'h018BA023;
+            55: rdata_o = 32'h04030E37;
+            56: rdata_o = 32'h201E0E13;
+            57: rdata_o = 32'h01CBAC23;
+            58: rdata_o = 32'h004BAD03;
+            59: rdata_o = 32'h004D7D93;
+            60: rdata_o = 32'hFE0D8CE3;
+            61: rdata_o = 32'h01CBAE83;
+            62: rdata_o = 32'h01D5A623;
+            63: rdata_o = 32'h00C00C13;
+            64: rdata_o = 32'h018BA023;
+            65: rdata_o = 32'h00600C13;
+            66: rdata_o = 32'h018BA023;
+            67: rdata_o = 32'h09080F37;
+            68: rdata_o = 32'h706F0F13;
+            69: rdata_o = 32'h01EBAC23;
+            70: rdata_o = 32'h004BAD03;
+            71: rdata_o = 32'h004D7D93;
+            72: rdata_o = 32'hFE0D8CE3;
+            73: rdata_o = 32'h01CBAF83;
+            74: rdata_o = 32'h01F5A823;
+            75: rdata_o = 32'h000049B7;
+            76: rdata_o = 32'h00098993;
+            77: rdata_o = 32'h0000EA37;
+            78: rdata_o = 32'hEADA0A13;
+            79: rdata_o = 32'h0149A023;
+            80: rdata_o = 32'h0009AA83;
+            81: rdata_o = 32'hCAFEFB37;
+            82: rdata_o = 32'h00DB0B13;
+            83: rdata_o = 32'h0165A223;
+            84: rdata_o = 32'h0000006F;
             default: rdata_o = 32'h00000013;  // NOP past the program end
         endcase
     end
