@@ -337,12 +337,27 @@ class SimLogParser(LogParser):
 
 class SynthLogParser(LogParser):
     def parse(self) -> Tuple[int, int, Dict[str, int]]:
-        cells = int(re.search(r'Number of cells:\s+(\d+)', self.content).group(1)) \
-            if re.search(r'Number of cells:\s+(\d+)', self.content) else 0
-        wires = int(re.search(r'Number of wires:\s+(\d+)', self.content).group(1)) \
-            if re.search(r'Number of wires:\s+(\d+)', self.content) else 0
+        # Yosys prints "Number of cells:"/"Number of wires:" once per
+        # submodule during hierarchy-analysis/opt passes, then again in a
+        # final rolled-up "=== design hierarchy ===" summary. A plain
+        # re.search() grabs the FIRST (a small submodule's own count), not
+        # the final flattened total. Anchor on the summary marker; fall back
+        # to the last match anywhere in the log if the marker is absent.
+        marker = self.content.rfind('=== design hierarchy ===')
+        tail = self.content[marker:] if marker != -1 else self.content
+
+        def _last_match(pattern: str, text: str) -> int:
+            matches = re.findall(pattern, text)
+            return int(matches[-1]) if matches else 0
+
+        cells = _last_match(r'Number of cells:\s+(\d+)', tail)
+        wires = _last_match(r'Number of wires:\s+(\d+)', tail)
+        if cells == 0 and marker != -1:
+            cells = _last_match(r'Number of cells:\s+(\d+)', self.content)
+        if wires == 0 and marker != -1:
+            wires = _last_match(r'Number of wires:\s+(\d+)', self.content)
         breakdown = {ct: int(cn) for ct, cn in
-                     re.findall(r'^\s+(\S+)\s+(\d+)\s*$', self.content, re.MULTILINE)}
+                     re.findall(r'^\s+(\S+)\s+(\d+)\s*$', tail, re.MULTILINE)}
         return cells, wires, breakdown
 
 
