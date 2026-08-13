@@ -1,0 +1,16 @@
+[options]
+mode bmc
+depth 8
+
+[engines]
+smtbmc boolector
+
+[script]
+read_verilog -sv -D FORMAL systolic_array_4x4.sv mac_pe.sv int8_mac_core.sv skew_chain.sv
+prep -top systolic_array_4x4
+
+[files]
+../rtl/systolic_array_4x4.sv
+../rtl/mac_pe.sv
+../rtl/int8_mac_core.sv
+../rtl/skew_chain.sv

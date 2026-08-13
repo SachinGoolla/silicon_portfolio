@@ -1,0 +1,13 @@
+[options]
+mode bmc
+depth 5
+
+[engines]
+smtbmc boolector
+
+[script]
+read_verilog -sv -D FORMAL int8_mac_core.sv
+prep -top int8_mac_core
+
+[files]
+../rtl/int8_mac_core.sv

@@ -1,0 +1,13 @@
+[options]
+mode bmc
+depth 10
+
+[engines]
+smtbmc boolector
+
+[script]
+read_verilog -sv -D FORMAL axis_skid.sv
+prep -top axis_skid
+
+[files]
+../rtl/axis_skid.sv

@@ -1,0 +1,21 @@
+[options]
+# Formal target: glue-FSM safety properties only (see axi4stream_ctrl.sv
+# `ifdef FORMAL` block). systolic_array_4x4 and axis_skid are replaced by
+# free (anyseq) stand-ins from axi4stream_ctrl_formal_stub.sv for this proof
+# only -- both already signed off standalone by their own checkpoints
+# (systolic_array_4x4.sby, axis_skid.sby). Matches fpu_axi_periph.sby's
+# exact pattern.
+mode bmc
+depth 10
+
+[engines]
+smtbmc boolector
+
+[script]
+read_verilog -sv -D FORMAL axi4stream_ctrl.sv
+read_verilog -sv axi4stream_ctrl_formal_stub.sv
+prep -top axi4stream_ctrl
+
+[files]
+../rtl/axi4stream_ctrl.sv
+axi4stream_ctrl_formal_stub.sv

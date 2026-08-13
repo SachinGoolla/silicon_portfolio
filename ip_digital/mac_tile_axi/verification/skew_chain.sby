@@ -1,0 +1,14 @@
+[options]
+mode bmc
+depth 8
+
+[engines]
+smtbmc boolector
+
+[script]
+read_verilog -sv -D FORMAL skew_chain.sv
+chparam -set WIDTH 8 -set DEPTH 3 skew_chain
+prep -top skew_chain
+
+[files]
+../rtl/skew_chain.sv

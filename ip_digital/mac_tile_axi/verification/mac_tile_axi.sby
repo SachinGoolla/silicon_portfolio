@@ -1,0 +1,21 @@
+[options]
+# Formal target: register-map decode + STATUS/RESULT write sequencing only
+# (see mac_tile_axi.sv `ifdef FORMAL` block). axi_lite_slave and
+# axi4stream_ctrl are replaced by free (anyseq) stand-ins from
+# mac_tile_axi_formal_stub.sv for this proof only -- both already signed
+# off standalone by their own checkpoints. Matches fpu_axi_periph.sby's
+# exact pattern.
+mode bmc
+depth 5
+
+[engines]
+smtbmc boolector
+
+[script]
+read_verilog -sv -D FORMAL mac_tile_axi.sv
+read_verilog -sv mac_tile_axi_formal_stub.sv
+prep -top mac_tile_axi
+
+[files]
+../rtl/mac_tile_axi.sv
+mac_tile_axi_formal_stub.sv
