@@ -12,6 +12,8 @@ pseudo-op expansion correctness, error handling), expected values are
 computed independently in each test, not copied from rv32i_asm.py's own
 logic.
 """
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -507,3 +509,47 @@ def test_word_directive_accepts_binary_literal():
     '0b1010' instead of parsed as the literal 10."""
     assert assemble(".word 0b1010") == [10]
     assert assemble(".word 0xA") == assemble(".word 0b1010")
+
+
+def test_format_rom_compiles_under_iverilog(tmp_path):
+    """Regression test for a real bug (found in RISC-V SoC roadmap Step 4,
+    the format's first real user): format_rom() emitted 'unique case
+    (addr_i[N:2])' -- a part-select used directly as a case expression --
+    which Icarus rejects ('sorry: constant selects in always_* processes
+    are not currently supported'), a class of bug the 102 encoding-oracle
+    tests above can't catch since they only check the returned word list,
+    never that the --format rom output actually compiles. The hand-written
+    ip_digital/rv32i_core/verification/imem_stub.sv this format is meant
+    to replace already worked around it with an intermediate wire (see
+    rom_idx there) -- format_rom() now does the same."""
+    if shutil.which("iverilog") is None:
+        pytest.skip("iverilog not on PATH")
+    words = assemble("li x1, 5\nli x2, 10\nadd x3, x1, x2\n")
+    sv = rv32i_asm.format_rom(words, "tiny_rom")
+    src = tmp_path / "tiny_rom.sv"
+    src.write_text(sv)
+    result = subprocess.run(
+        ["iverilog", "-g2012", "-o", str(tmp_path / "tiny_rom.vvp"), str(src)],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "constant selects" not in result.stderr
+
+
+def test_format_rom_lints_clean_under_verilator(tmp_path):
+    """Companion to test_format_rom_compiles_under_iverilog: format_rom()'s
+    generated module also needs the imem_stub.sv-style _unused_addr catch
+    for the non-indexing address bits, or Verilator's -Wall (the exact
+    flags scripts/pillars/p1_lint.py runs with -- no -Wno-fatal) turns the
+    UNUSEDSIGNAL warning into a fatal lint error."""
+    if shutil.which("verilator") is None:
+        pytest.skip("verilator not on PATH")
+    words = assemble("li x1, 5\nli x2, 10\nadd x3, x1, x2\n")
+    sv = rv32i_asm.format_rom(words, "tiny_rom")
+    src = tmp_path / "tiny_rom.sv"
+    src.write_text(sv)
+    result = subprocess.run(
+        ["verilator", "--lint-only", "-Wall", str(src)],
+        capture_output=True, text=True, timeout=30, cwd=str(tmp_path),
+    )
+    assert result.returncode == 0, result.stderr
