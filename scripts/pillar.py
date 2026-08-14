@@ -104,6 +104,27 @@ def _pillar_note(step: str, status: str, row: dict) -> Optional[str]:
     return None
 
 
+def _fail_diagnostic(step: str, status: str, row: dict) -> Optional[str]:
+    """Diagnostic pointer for specific, recurring FAIL shapes this flow has
+    seen before — deliberately separate from _pillar_note()'s WARN/SKIP
+    rationale mechanism and NOT consulted by _evaluate_hard_gate(): a FAIL
+    must always fail the build regardless of how well-understood it is. This
+    only adds a pointer to where a human should look next, on a STATUS.md
+    that would otherwise show a bare '❌ FAIL' with no lead. See project
+    memory feedback-gls-tb for the recurring pattern this documents."""
+    if step == "sta" and status == "FAIL" and row.get("gls_status") == "FAIL":
+        return ("p8_sta_gls.py returns hard FAIL the instant GLS fails, before "
+                 "the timing-slack branch runs — so this FAIL is from GLS, not "
+                 "necessarily timing (check slack_status separately above). "
+                 "Before treating as a regression, check this IP's gls_<top>.log "
+                 "for 'TIMEOUT' vs an actual $error/$fatal/mismatch — a composed "
+                 "design in the ~150K+ cell range has hit a confirmed Icarus/vvp "
+                 "wall-clock scale wall before (zero output even after a "
+                 "10-minute uncapped run — not a mistuned budget, see this IP's "
+                 "REPORT.md).")
+    return None
+
+
 def _evaluate_hard_gate(results: dict, row: dict) -> Tuple[bool, list]:
     """Hard-gate policy: FAIL always fails the build. WARN fails the build
     too UNLESS it matches a known, documented pattern (the same
@@ -714,6 +735,7 @@ class PillarFlow:
             lines.append("|---|---|---|---|---|")
             icons = {"PASS": "✅", "WARN": "⚠️", "SKIP": "⏭️", "FAIL": "❌"}
             notes = []
+            fail_diagnostics = []
             for step in _PILLAR_STEPS:
                 p = prov[step]
                 label = _PILLAR_LABELS[step]
@@ -727,12 +749,27 @@ class PillarFlow:
                 note = _pillar_note(step, p["status"], p["row"])
                 if note:
                     notes.append(f"- **{label} — {p['status']}**: {note}")
+                diag = _fail_diagnostic(step, p["status"], p["row"])
+                if diag:
+                    fail_diagnostics.append(f"- **{label} — {p['status']}**: {diag}")
             lines.append("")
 
             if notes:
                 lines.append("## Known WARN/SKIP rationale")
                 lines.append("")
                 lines.extend(notes)
+                lines.append("")
+
+            if fail_diagnostics:
+                lines.append("## FAIL diagnostic notes")
+                lines.append("")
+                lines.append(
+                    "_These FAILs still block sign-off — nothing below waives "
+                    "them. This is a pointer to where to look, for a recurring "
+                    "failure shape this flow has seen before._"
+                )
+                lines.append("")
+                lines.extend(fail_diagnostics)
                 lines.append("")
 
             history_file = self.build_dir / ".pillar_history.jsonl"
