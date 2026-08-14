@@ -32,22 +32,45 @@
 #            real pipelined multi-vector throughput is already proven by
 #            the tile's own standalone P3/P4 harness; this only proves the
 #            SoC-level MMIO wiring and address-decoder routing to the tile.
-#   5. DECERR: deliberately touches an unmapped address (page 0x4, no
+#   5. CLUSTER: loads tile0's W=5*I via mac_cluster's own internal CSR page
+#            (same convention as the MAC section above), then pushes ONE
+#            activation through tile0's NI CPU-entry path with
+#            mesh_egress_en left at its reset default (0 -- CPU-exit
+#            capture mode), so the result comes straight back out the
+#            SAME tile's own m_axis into the NI's exit_result_q with no
+#            mesh hop needed for this smoke test. This only proves the
+#            SoC-level address-decoder routing to the new CLUSTER page and
+#            the NI's CPU-entry/exit CSR wiring -- mac_cluster's own
+#            standalone P3/P4 harness already proves real multi-tile mesh
+#            routing and the exit_seq discriminator (NI_STATUS bit3,
+#            REQUIRED reading once a tile has consumed a prior result --
+#            see mac_cluster.sv's own header comment and REPORT.md for the
+#            real stale-read race this was added to close). Not checked
+#            here: this is tile0's FIRST-EVER exit capture since reset, so
+#            its post-capture exit_seq_q value is unambiguously non-zero --
+#            no prior consumed result exists to produce a stale echo. A
+#            program pushing a SECOND result through the same tile would
+#            need the same reject-stale-seq discipline
+#            test_mac_cluster.py/tb_mac_cluster.sv both implement.
+#   6. DECERR: deliberately touches an unmapped address (page 0x5, no
 #            slave lives there) to prove the address decoder's DECERR path
 #            actually propagates back through the whole composition, not
 #            just in the decoder's own standalone formal proof. rv32i_lsu
 #            ignores bresp_i/rresp_i by design (see its own header comment)
 #            so the core is expected to keep running normally afterward.
-#   6. A completion marker is stored to RAM last, so the testbench can
-#            golden-check RAM[0]/RAM[1]/RAM[2]/RAM[3] once the halt loop is
-#            reached, rather than needing to trace individual instructions.
+#            Moved from page 0x4 (Phase 2's own probe address) to page 0x5
+#            this phase -- 0x4 is now the real CLUSTER page.
+#   7. A completion marker is stored to RAM last, so the testbench can
+#            golden-check RAM[0]-RAM[5] once the halt loop is reached,
+#            rather than needing to trace individual instructions.
 #
 # Address map (ip_digital/rv32i_soc/rtl/rv32i_addr_decoder.sv):
-#   0x0000_0000-0x0000_0FFF RAM  (axi_lite_slave, 256 words / 1KB used)
-#   0x0000_1000-0x0000_1FFF UART (uart_axi_periph)
-#   0x0000_2000-0x0000_2FFF FPU  (fpu_axi_periph)
-#   0x0000_3000-0x0000_3FFF MAC  (mac_tile_axi)
-#   0x0000_4000              unmapped -> DECERR
+#   0x0000_0000-0x0000_0FFF RAM     (axi_lite_slave, 256 words / 1KB used)
+#   0x0000_1000-0x0000_1FFF UART    (uart_axi_periph)
+#   0x0000_2000-0x0000_2FFF FPU     (fpu_axi_periph)
+#   0x0000_3000-0x0000_3FFF MAC     (mac_tile_axi)
+#   0x0000_4000-0x0000_47FF CLUSTER (mac_cluster, own internal 5-way sub-decode)
+#   0x0000_5000              unmapped -> DECERR
 
 # ---- FPU: FADD(1.0, 1.0) = 2.0 ----
 li   x5, 0x2000         # FPU_BASE
@@ -158,13 +181,53 @@ beqz x27, mac_wait_result2
 lw   x31, 28(x23)                                       # RESULT0 -- expect 30 (Y2=5*A2, Y2[0]=5*6)
 sw   x31, 16(x11)                                       # RAM[word 4] = second MAC RESULT0
 
+# ---- CLUSTER: load tile0's W=5*I, push A=[1,2,3,4] via the NI's CPU-entry
+# path, read the result straight back out CPU-exit capture (no mesh hop) ----
+li   x5, 0x4000                                        # CLUSTER_BASE (tile0's own CTRL page)
+li   x6, 0x00000005
+sw   x6, 8(x5)                                          # tile0 WEIGHT_ROW0 = [5,0,0,0]
+li   x6, 0x00000500
+sw   x6, 12(x5)                                         # tile0 WEIGHT_ROW1 = [0,5,0,0]
+li   x6, 0x00050000
+sw   x6, 16(x5)                                         # tile0 WEIGHT_ROW2 = [0,0,5,0]
+li   x6, 0x05000000
+sw   x6, 20(x5)                                         # tile0 WEIGHT_ROW3 = [0,0,0,5]
+li   x7, 1
+sw   x7, 0(x5)                                          # tile0 CTRL: pulse LOAD_WEIGHTS
+
+cluster_wait_loaded:
+lw   x8, 4(x5)                                          # tile0 STATUS
+andi x9, x8, 1                                          # WEIGHTS_LOADED
+beqz x9, cluster_wait_loaded
+
+li   x5, 0x4400                                         # CLUSTER_BASE + NI-CSR page, tile0's own regs
+li   x10, 0x04030201                                    # A = {a3=4,a2=3,a1=2,a0=1}
+sw   x10, 12(x5)                                        # tile0 NI_ENTRY_DATA
+li   x7, 0x3                                            # ENTRY_PUSH(bit0) | TLAST_NEXT(bit1)
+sw   x7, 0(x5)                                          # tile0 NI_CTRL: push
+
+cluster_wait_entry:
+lw   x8, 4(x5)                                          # tile0 NI_STATUS
+andi x9, x8, 1                                          # ENTRY_BUSY
+bnez x9, cluster_wait_entry
+
+cluster_wait_exit:
+lw   x8, 4(x5)
+andi x9, x8, 2                                          # EXIT_VALID
+beqz x9, cluster_wait_exit
+
+lw   x10, 16(x5)                                        # tile0 NI_EXIT_RESULT0 -- expect 5
+sw   x10, 20(x11)                                       # RAM[word 5] = CLUSTER RESULT0
+li   x7, 0x8                                            # EXIT_ACK(bit3)
+sw   x7, 0(x5)                                          # tile0 NI_CTRL: ack
+
 # ---- DECERR: touch an unmapped address, confirm the core keeps running ----
-li   x19, 0x4000                                  # unmapped page
+li   x19, 0x5000                                  # unmapped page (moved from 0x4000 -- CLUSTER lives there now)
 li   x20, 0xDEAD
 sw   x20, 0(x19)                                    # store to unmapped -> SLVERR, core continues
 lw   x21, 0(x19)                                     # load from unmapped -> decoder returns rdata=0
 
-# ---- completion marker (testbench golden-checks RAM[0]/[1]/[2]/[3]/[4] once here) ----
+# ---- completion marker (testbench golden-checks RAM[0]-[5] once here) ----
 li   x22, 0xCAFEF00D
 sw   x22, 4(x11)                                       # RAM[word 1] = completion marker
 

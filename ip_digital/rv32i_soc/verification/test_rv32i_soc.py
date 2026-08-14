@@ -32,12 +32,14 @@ RAM_WORD_DONE_MARKER = 1
 RAM_WORD_UART_RX = 2
 RAM_WORD_MAC_RESULT0 = 3
 RAM_WORD_MAC_RESULT0_2ND = 4
+RAM_WORD_CLUSTER_RESULT0 = 5
 
 EXPECT_FPU_RESULT = 0x40000000    # FADD(1.0, 1.0) = 2.0
 EXPECT_DONE_MARKER = 0xCAFEF00D
 EXPECT_UART_RX = 0x00000041       # 'A', looped back through uart_rx_i<=uart_tx_o
 EXPECT_MAC_RESULT0 = 0x00000005       # W=5*I, A1=[1,2,3,4] via MMIO bridge -> Y[0]=5*1
 EXPECT_MAC_RESULT0_2ND = 0x0000001E   # W=5*I, A2=[6,7,8,9], after RESULT_ACK -> Y[0]=5*6=30
+EXPECT_CLUSTER_RESULT0 = 0x00000005   # W=5*I, A=[1,2,3,4] via cluster tile0's NI -> Y[0]=5*1
 
 
 def _safe_int(signal):
@@ -131,6 +133,13 @@ async def test_program_runs_to_completion(dut):
                        f"expected 0x{EXPECT_MAC_RESULT0_2ND:08x}")
     else:
         dut._log.info(f"RAM[{RAM_WORD_MAC_RESULT0_2ND}] (MAC RESULT0, 2nd push) = 0x{got_mac2:08x}  OK")
+
+    got_cluster = _safe_int(dut.u_ram.reg_q[RAM_WORD_CLUSTER_RESULT0])
+    if got_cluster != EXPECT_CLUSTER_RESULT0:
+        errors.append(f"RAM[{RAM_WORD_CLUSTER_RESULT0}] (CLUSTER tile0 RESULT0) = 0x{got_cluster:08x}, "
+                       f"expected 0x{EXPECT_CLUSTER_RESULT0:08x}")
+    else:
+        dut._log.info(f"RAM[{RAM_WORD_CLUSTER_RESULT0}] (CLUSTER tile0 RESULT0) = 0x{got_cluster:08x}  OK")
 
     assert not errors, "rv32i_soc self-check failed:\n" + "\n".join(errors)
     dut._log.info("test_program_runs_to_completion PASS")

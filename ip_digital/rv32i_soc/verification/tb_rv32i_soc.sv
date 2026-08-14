@@ -76,12 +76,14 @@ module tb_rv32i_soc;
     localparam int RAM_WORD_UART_RX     = 2;
     localparam int RAM_WORD_MAC_RESULT0 = 3;
     localparam int RAM_WORD_MAC_RESULT0_2ND = 4;
+    localparam int RAM_WORD_CLUSTER_RESULT0 = 5;
 
     localparam logic [31:0] EXPECT_FPU_RESULT = 32'h40000000;  // FADD(1.0,1.0)=2.0
     localparam logic [31:0] EXPECT_DONE_MARKER = 32'hCAFEF00D;
     localparam logic [31:0] EXPECT_UART_RX     = 32'h00000041;  // 'A', looped back
     localparam logic [31:0] EXPECT_MAC_RESULT0 = 32'h00000005;  // W=5*I, A1=[1,2,3,4] -> Y[0]=5*1
     localparam logic [31:0] EXPECT_MAC_RESULT0_2ND = 32'h0000001E;  // W=5*I, A2=[6,7,8,9] -> Y[0]=5*6=30
+    localparam logic [31:0] EXPECT_CLUSTER_RESULT0 = 32'h00000005;  // W=5*I, A=[1,2,3,4] via cluster tile0's NI -> Y[0]=5*1
 
     initial begin
         errors = 0;
@@ -147,6 +149,15 @@ module tb_rv32i_soc;
             end else begin
                 $display("TB_RV32I_SOC: OK      RAM[%0d] (MAC RESULT0, 2nd push) = 32'h%08x",
                           RAM_WORD_MAC_RESULT0_2ND, u_dut.u_ram.reg_q[RAM_WORD_MAC_RESULT0_2ND]);
+            end
+
+            if (u_dut.u_ram.reg_q[RAM_WORD_CLUSTER_RESULT0] !== EXPECT_CLUSTER_RESULT0) begin
+                $display("TB_RV32I_SOC: MISMATCH RAM[%0d] (CLUSTER tile0 RESULT0) = 32'h%08x, expected 32'h%08x",
+                          RAM_WORD_CLUSTER_RESULT0, u_dut.u_ram.reg_q[RAM_WORD_CLUSTER_RESULT0], EXPECT_CLUSTER_RESULT0);
+                errors = errors + 1;
+            end else begin
+                $display("TB_RV32I_SOC: OK      RAM[%0d] (CLUSTER tile0 RESULT0) = 32'h%08x",
+                          RAM_WORD_CLUSTER_RESULT0, u_dut.u_ram.reg_q[RAM_WORD_CLUSTER_RESULT0]);
             end
         end
 

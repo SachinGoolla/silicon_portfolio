@@ -1,0 +1,15 @@
+[options]
+mode bmc
+depth 10
+
+[engines]
+smtbmc boolector
+
+[script]
+read_verilog -sv -D FORMAL mac_cluster.sv
+read_verilog -sv mac_cluster_formal_stub.sv
+prep -top mac_cluster
+
+[files]
+../rtl/mac_cluster.sv
+mac_cluster_formal_stub.sv

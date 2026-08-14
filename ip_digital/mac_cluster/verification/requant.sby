@@ -1,0 +1,13 @@
+[options]
+mode prove
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read_verilog -sv -D FORMAL requant.sv
+prep -top requant
+
+[files]
+../rtl/requant.sv

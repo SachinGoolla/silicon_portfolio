@@ -1,0 +1,13 @@
+[options]
+mode prove
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read_verilog -sv -D FORMAL xy_route.sv
+prep -top xy_route
+
+[files]
+../rtl/xy_route.sv

@@ -1,0 +1,18 @@
+[options]
+mode bmc
+depth 10
+
+[engines]
+smtbmc boolector
+
+[script]
+read_verilog -sv -D FORMAL mesh_2x2.sv mesh_router.sv xy_route.sv axis_skid.sv rr_arbiter.sv
+chparam -set PAYLOAD_W 8 -set FLIT_W 14 mesh_2x2
+prep -top mesh_2x2
+
+[files]
+../rtl/mesh_2x2.sv
+../rtl/mesh_router.sv
+../rtl/xy_route.sv
+../rtl/axis_skid.sv
+../rtl/rr_arbiter.sv

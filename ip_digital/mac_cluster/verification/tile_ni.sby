@@ -1,0 +1,14 @@
+[options]
+mode bmc
+depth 10
+
+[engines]
+smtbmc boolector
+
+[script]
+read_verilog -sv -D FORMAL tile_ni.sv requant.sv
+prep -top tile_ni
+
+[files]
+../rtl/tile_ni.sv
+../rtl/requant.sv
