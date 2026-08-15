@@ -126,6 +126,12 @@ class FunctionalMetrics:
     tests_skipped: int = 0; sim_time_ns: float = 0; cpu_time_s: float = 0
     speed_ratio: float = 0; seed: str = "Unknown"
     test_details: List[Dict] = field(default_factory=list)
+    # Optional: populated only when a pyuvm test's own report_phase() logs a
+    # "coverage=NN.N%" line (e.g. mac_cluster's test_coverage_closure) --
+    # None-tolerant, same idiom P5's CoverageMetrics uses for fields that
+    # aren't always populated (e.g. when --coverage-expr wasn't run).
+    func_cov_pct: float = None
+    func_cov_bins: Dict[str, float] = field(default_factory=dict)
 
 @dataclass
 class SimMetrics:

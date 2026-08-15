@@ -1,8 +1,35 @@
 """Pillar 3 — Functional (cocotb / Icarus + pyuvm). Returns PASS | FAIL | SKIP."""
+import re
 import sys
 from pathlib import Path
 from .common import (C, Dashboard, FunctionalLogParser, FunctionalXMLParser,
                      FunctionalMetrics, PILLAR_ICONS)
+
+_FUNC_COV_RE = re.compile(r'coverage=(\d+(?:\.\d+)?)%', re.IGNORECASE)
+_FUNC_COV_BIN_RE = re.compile(r'^\s*([A-Za-z][A-Za-z0-9_]*):\s*(\d+(?:\.\d+)?)%\s*$')
+
+
+def _parse_uvm_coverage(flow):
+    """Best-effort: scan every pyuvm test's own log for a report_phase()
+    line matching '...coverage=NN.N%...' (e.g. mac_cluster's
+    test_coverage_closure) and the per-CoverPoint '<Name>: NN%' lines that
+    immediately follow it (mac_cluster_coverage.py's own CoverPoint.report()
+    format). Returns (pct, {name: pct}) or (None, {}) if no UVM test in
+    this IP reports coverage -- most IPs won't, and that's fine, same
+    None-tolerant idiom as P5's optional coverage fields."""
+    for log_file in sorted(flow.log_dir.glob(f"uvm_test_*_{flow.top}.log")):
+        text = log_file.read_text(errors='replace')
+        m = _FUNC_COV_RE.search(text)
+        if not m:
+            continue
+        pct = float(m.group(1))
+        bins = {}
+        for line in text.splitlines():
+            bm = _FUNC_COV_BIN_RE.match(line)
+            if bm:
+                bins[bm.group(1)] = float(bm.group(2))
+        return pct, bins
+    return None, {}
 
 
 def _run_vlog_tb(flow, tb_file: Path, rtl_files: list) -> str:
@@ -52,7 +79,7 @@ def _run_vlog_tb(flow, tb_file: Path, rtl_files: list) -> str:
     return status
 
 
-def _run_uvm(flow) -> str:
+def _run_uvm(flow, uvm_coverage_threshold: int = 0) -> str:
     """Run pyuvm tests from verification/uvm/tests/ if present."""
     scripts_uvm = flow.root / "scripts" / "uvm"
     if str(scripts_uvm) not in sys.path:
@@ -72,6 +99,10 @@ def _run_uvm(flow) -> str:
     summary = runner.run()
 
     pct = int((summary.passed / summary.total) * 100) if summary.total > 0 else 0
+    func_cov_pct, func_cov_bins = _parse_uvm_coverage(flow)
+    flow.all_metrics.functional.func_cov_pct = func_cov_pct
+    flow.all_metrics.functional.func_cov_bins = func_cov_bins
+
     dash = Dashboard("FUNCTIONAL — pyuvm / Icarus", C.BGREEN)
     dash.add_metric("UVM Tests Total",  summary.total)
     dash.add_metric("Passed",           summary.passed,
@@ -81,6 +112,12 @@ def _run_uvm(flow) -> str:
     dash.add_metric("Skipped",          summary.skipped)
     dash.add_metric("Errors",           summary.errors,
                     value_color=C.BRED if summary.errors > 0 else C.BGREEN)
+    if func_cov_pct is not None:
+        dash.add_metric("Functional Coverage", f"{func_cov_pct:.1f}", " %",
+                        value_color=C.BGREEN if func_cov_pct >= 90 else C.BYELLOW)
+        if uvm_coverage_threshold > 0:
+            dash.add_metric("UVM Coverage Threshold", f"{uvm_coverage_threshold}%",
+                            value_color=C.BGREEN if func_cov_pct >= uvm_coverage_threshold else C.BRED)
     if summary.details:
         dash.add_section_header("Test Details")
         for td in summary.details[:10]:
@@ -94,12 +131,15 @@ def _run_uvm(flow) -> str:
 
     if summary.failed > 0 or summary.errors > 0:
         return "FAIL"
+    if func_cov_pct is not None and uvm_coverage_threshold > 0 and func_cov_pct < uvm_coverage_threshold:
+        print(f"  {C.err('❌ UVM Coverage FAIL')} — {func_cov_pct:.1f}% < threshold {uvm_coverage_threshold}%")
+        return "FAIL"
     if summary.total == 0:
         return "SKIP"
     return "PASS"
 
 
-def run(flow) -> str:
+def run(flow, uvm_coverage_threshold: int = 0) -> str:
     print(f"\n  {C.hdr('━━━ PILLAR 3: Functional')}  {PILLAR_ICONS[2]}  {C.dim(flow.top)}")
     rtl_files  = flow._find_all_rtl()
     test_files = list(flow.verif_dir.glob("test_*.py"))
@@ -117,8 +157,15 @@ def run(flow) -> str:
     if not test_files and vlog_tb:
         return _run_vlog_tb(flow, vlog_tb, rtl_files)
 
-    uvm_test_files = sorted((flow.verif_dir / "uvm" / "tests").glob("test_*.py")) \
-        if (flow.verif_dir / "uvm" / "tests").is_dir() else []
+    # Recursive, not just uvm/tests/test_*.py: a uvm-tier env/driver/monitor/
+    # scoreboard/coverage/sequences file (e.g. coverage bin definitions) can
+    # change behavior without any test_*.py file itself changing. Missing
+    # those from deps would let is_checkpoint_valid() below short-circuit to
+    # a stale cached PASS after an edit — the same checkpoint-carried-false-
+    # PASS class the repo-root CLAUDE.md's formal-idioms section warns about
+    # for a different pillar.
+    uvm_dir = flow.verif_dir / "uvm"
+    uvm_test_files = sorted(uvm_dir.rglob("*.py")) if uvm_dir.is_dir() else []
     deps = rtl_files + test_files + uvm_test_files
     if flow.is_checkpoint_valid("functional", deps):
         print(f"     {C.ok('✓ Skipped')} {C.dim('(no changes since last test run)')}")
@@ -217,7 +264,7 @@ def run(flow) -> str:
     print(f"  {C.ok('✓ Functional PASS')}  {C.dim(f'log → {log_file.name}')}")
 
     # ── pyuvm tier (optional — runs in addition to cocotb directed tests) ──
-    uvm_status = _run_uvm(flow)
+    uvm_status = _run_uvm(flow, uvm_coverage_threshold=uvm_coverage_threshold)
     if uvm_status == "FAIL":
         print(f"  {C.err('❌ UVM FAIL')} — pyuvm scoreboard found mismatches")
         return "FAIL"

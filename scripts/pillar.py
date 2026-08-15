@@ -50,7 +50,9 @@ def _pillar_metric(step: str, row: dict) -> str:
         return f"depth {row.get('formal_depth', '?')}"
     if step == "functional":
         p, f = row.get('func_pass', 0), row.get('func_fail', 0)
-        return f"{p}/{p + f} tests"
+        cov = row.get('func_cov_pct')
+        suffix = f", {cov:.1f}% func cov" if cov is not None else ""
+        return f"{p}/{p + f} tests{suffix}"
     if step == "sim":
         return "—"
     if step == "coverage":
@@ -626,6 +628,7 @@ class PillarFlow:
             "formal_depth":    m.formal.depth,
             "func_pass":       m.functional.tests_passed,
             "func_fail":       m.functional.tests_failed,
+            "func_cov_pct":    m.functional.func_cov_pct,
             "cov_pct":         m.coverage.line_coverage_pct,
             "cov_uncovered":   len(m.coverage.uncovered_lines),
             "synth_cells":     m.synth.total_cells,
@@ -995,6 +998,7 @@ class PillarFlow:
     # ── Orchestration ─────────────────────────────────────────────────────────
 
     def run_all(self, coverage_threshold: int = 0, coverage_toggle_threshold: int = 0,
+                uvm_coverage_threshold: int = 0,
                 formal_depth: int = 0,
                 force: bool = False, pdk: str = 'auto',
                 ip_path: Optional[str] = None) -> Dict[str, str]:
@@ -1043,6 +1047,8 @@ class PillarFlow:
                         cmd += f" --coverage-threshold {coverage_threshold}"
                     if step == "coverage" and coverage_toggle_threshold:
                         cmd += f" --coverage-toggle-threshold {coverage_toggle_threshold}"
+                    if step == "functional" and uvm_coverage_threshold:
+                        cmd += f" --uvm-coverage-threshold {uvm_coverage_threshold}"
                     cmds.append(cmd)
                 # Feed one command per line to parallel via stdin
                 # --group: buffer each job's output, print atomically on completion
@@ -1057,7 +1063,7 @@ class PillarFlow:
                 seq_map = {
                     "lint":       lambda: p1_lint.run(self),
                     "formal":     lambda: p2_formal.run(self, formal_depth=formal_depth),
-                    "functional": lambda: p3_functional.run(self),
+                    "functional": lambda: p3_functional.run(self, uvm_coverage_threshold=uvm_coverage_threshold),
                     "sim":        lambda: p4_sim.run(self),
                     "coverage":   lambda: p5_coverage.run(self, threshold=coverage_threshold,
                                                            toggle_threshold=coverage_toggle_threshold),
@@ -1089,13 +1095,14 @@ class PillarFlow:
 
     def run_step(self, step: str, coverage_threshold: int = 0,
                 coverage_toggle_threshold: int = 0,
+                uvm_coverage_threshold: int = 0,
                 formal_depth: int = 0,
                 force: bool = False, pdk: str = 'auto',
                 ip_path: Optional[str] = None) -> Dict[str, str]:
         single = {
             "lint":       lambda: p1_lint.run(self),
             "formal":     lambda: p2_formal.run(self, formal_depth=formal_depth),
-            "functional": lambda: p3_functional.run(self),
+            "functional": lambda: p3_functional.run(self, uvm_coverage_threshold=uvm_coverage_threshold),
             "sim":        lambda: p4_sim.run(self),
             "coverage":   lambda: p5_coverage.run(self, threshold=coverage_threshold,
                                                    toggle_threshold=coverage_toggle_threshold),
@@ -1107,6 +1114,7 @@ class PillarFlow:
         if step == "all":
             results = self.run_all(coverage_threshold=coverage_threshold,
                                    coverage_toggle_threshold=coverage_toggle_threshold,
+                                   uvm_coverage_threshold=uvm_coverage_threshold,
                                    formal_depth=formal_depth,
                                    force=force, pdk=pdk, ip_path=ip_path)
         elif step == "clean":
@@ -1157,6 +1165,10 @@ PDKs:   --pdk sky130 | nangate | auto  (auto: prefers sky130)
                         help="Minimum line coverage %% — Pillar 5 FAILS below this (0=advisory)")
     parser.add_argument("--coverage-toggle-threshold", type=int, default=0, metavar="PCT",
                         help="Minimum toggle coverage %% — Pillar 5 FAILS below this (0=advisory)")
+    parser.add_argument("--uvm-coverage-threshold", type=int, default=0, metavar="PCT",
+                        help="Minimum pyuvm functional coverage %% (from a test's own "
+                             "'coverage=NN.N%%' report_phase log, e.g. mac_cluster's "
+                             "test_coverage_closure) — Pillar 3 FAILS below this (0=advisory)")
     parser.add_argument("--formal-depth", type=int, default=0, metavar="N",
                         help="Override k-induction depth in .sby (0=use .sby value)")
     parser.add_argument("--params", default="", metavar="KEY=VAL,...",
@@ -1183,7 +1195,7 @@ PDKs:   --pdk sky130 | nangate | auto  (auto: prefers sky130)
             "lint":       lambda: p1_lint.run(flow),
             "formal":     lambda: p2_formal.run(flow, formal_depth=args.formal_depth),
             "upf":        lambda: p9_upf.run(flow),
-            "functional": lambda: p3_functional.run(flow),
+            "functional": lambda: p3_functional.run(flow, uvm_coverage_threshold=args.uvm_coverage_threshold),
             "sim":        lambda: p4_sim.run(flow),
             "coverage":   lambda: p5_coverage.run(flow, threshold=args.coverage_threshold,
                                                    toggle_threshold=args.coverage_toggle_threshold),
@@ -1199,6 +1211,7 @@ PDKs:   --pdk sky130 | nangate | auto  (auto: prefers sky130)
 
     results = flow.run_step(args.step, coverage_threshold=args.coverage_threshold,
                             coverage_toggle_threshold=args.coverage_toggle_threshold,
+                            uvm_coverage_threshold=args.uvm_coverage_threshold,
                             formal_depth=args.formal_depth,
                             force=args.force, pdk=args.pdk, ip_path=args.ip_path)
 

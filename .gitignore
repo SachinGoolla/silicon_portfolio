@@ -27,7 +27,15 @@ obj_dir*/
 *.a
 
 # ── Formal verification working directories ──────────────────
+# (SymbiYosys auto-generates one per module under test, e.g.
+# verification/xy_route/ — but this pattern also accidentally matched real,
+# hand-written source trees one level under verification/, e.g.
+# verification/uvm/ (a pyUVM tier's actual .py source, not a generated
+# scratch dir) — silently kept both fpu_top's and mac_cluster's own UVM
+# source out of git entirely. Carve those back in explicitly rather than
+# relying on directory-depth alone to distinguish "generated" from "source".
 **/verification/*/
+!**/verification/uvm/
 
 # ── Simulator outputs ────────────────────────────────────────
 *.vcd
