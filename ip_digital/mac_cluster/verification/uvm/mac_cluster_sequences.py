@@ -159,6 +159,18 @@ class ConcurrentEgressReconfigSeq(uvm_sequence):
     arbitration outrunning the CPU -- the ingress mux itself decided
     correctly every time it was actually able to re-decide.
 
+    UPDATE (Phase 5 checkpoint A): that "decided correctly every time"
+    claim was true when written but has since been tightened, not
+    invalidated. tile_ni.sv's ingress mux used to give the mesh
+    UNCONDITIONAL priority (no bound at all); test_race_adjacent.py's own
+    observed starved count dropped 6->5 after entry_starve_cnt_q/
+    FAIRNESS_LIMIT landed -- meaning one of the previously-observed starved
+    pushes here WAS raw mesh-priority contention outrunning the CPU, now
+    fixed. The remaining ~5 are still this buffer-freeze chain, which
+    Checkpoint A does not touch (see test_ingress_fairness.py for the
+    isolated regression that confirms the fairness bound in isolation from
+    this freeze mechanism, where starved is 0/20).
+
     The once-per-iteration drain here is a partial mitigation, not a full
     fix, and is deliberately left that way: it runs BEFORE this iteration's
     own push_mesh/push_own, so it clears whatever a PRIOR iteration left
@@ -215,6 +227,77 @@ class ConcurrentEgressReconfigSeq(uvm_sequence):
         await self.start_item(push_own)
         await self.finish_item(push_own)
         self.starved = push_own.starved
+
+
+class IngressFairnessSeq(uvm_sequence):
+    """Phase 5 checkpoint A's load-bearing empirical check. Isolates the
+    ingress-mux fairness mechanism (tile_ni.sv's entry_starve_cnt_q /
+    FAIRNESS_LIMIT) from the exit-buffer-freeze mechanism
+    ConcurrentEgressReconfigSeq's own docstring identifies as the DOMINANT
+    cause of test_race_adjacent.py's observed starvation. Unlike that
+    sequence, this one fully drains `tile`'s exit register TWICE after every
+    iteration -- once for whichever result lands first (mesh-forwarded or
+    the CPU entry push, order not guaranteed), once for the other -- so
+    axi4stream_ctrl.sv's array never freezes and entry_starve_cnt_q's own
+    formal bound (tile_ni_liveness.sby's entry_starve_cnt_q <=
+    FAIRNESS_LIMIT+1) is the only mechanism left that could produce a
+    starved push.
+
+    Both push_mesh (forwarded from mesh_src, mesh_egress_en=1) and push_own
+    (a direct CPU entry push on `tile`, mesh_egress_en=0, which also resets
+    `tile`'s own sticky mesh_egress_en_i to 0 -- so BOTH results land in
+    `tile`'s own exit register, not one forwarded onward) are fired back-to-
+    back with no intervening wait, same racing discipline
+    ConcurrentEgressReconfigSeq already established as sufficient to create
+    real ingress-mux contention (confirmed empirically there via
+    ingress_mux_contention=100%).
+
+    Expected result: starved_count stays 0 across `iterations` -- this is
+    the checkpoint's actual verification, not test_race_adjacent.py's own,
+    differently-scoped (freeze-dominated) starved metric, which this
+    sequence deliberately does not re-litigate.
+    """
+
+    def __init__(self, name="ingress_fairness_seq", mesh_src=0, tile=CONSUMER_TILE, iterations=20):
+        super().__init__(name)
+        self.mesh_src, self.tile, self.iterations = mesh_src, tile, iterations
+        self.starved_count = 0
+        self.last_seq = 0
+        self.drain_starved_count = 0
+
+    async def _drain_one(self):
+        poll = MacClusterSeqItem(f"ifs_drain_{self.tile}").randomize_poll_exit(
+            tile=self.tile, last_seq=self.last_seq)
+        poll.timeout = 200
+        await self.start_item(poll)
+        await self.finish_item(poll)
+        if poll.starved:
+            self.drain_starved_count += 1
+        else:
+            self.last_seq = poll.result_seq
+
+    async def body(self):
+        dest = (self.tile % 2, self.tile // 2)
+        for i in range(self.iterations):
+            push_mesh = MacClusterSeqItem(f"ifs_mesh_{i}").randomize_entry_push(
+                src=self.mesh_src, dest=dest, mesh_egress_en=1)
+            await self.start_item(push_mesh)
+            await self.finish_item(push_mesh)
+
+            push_own = MacClusterSeqItem(f"ifs_own_{i}").randomize_entry_push(
+                src=self.tile, mesh_egress_en=0)
+            await self.start_item(push_own)
+            await self.finish_item(push_own)
+            if push_own.starved:
+                self.starved_count += 1
+
+            # Both pushes' results land in this tile's single exit slot
+            # (push_own's mesh_egress_en=0 write also resets tile's own
+            # sticky mesh_egress_en_i, so the mesh-forwarded result no
+            # longer forwards past this tile either) -- drain both before
+            # the next iteration's pushes can refill the slot.
+            await self._drain_one()
+            await self._drain_one()
 
 
 class MacClusterBasicRandomSeq(uvm_sequence):

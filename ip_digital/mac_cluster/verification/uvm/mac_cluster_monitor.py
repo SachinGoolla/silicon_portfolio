@@ -25,16 +25,23 @@ NUM_TILES = 4
 class HierSample:
     """One tile's internal state, sampled on one clock edge."""
     __slots__ = ("tile", "sim_time_ns", "exit_seq_q", "exit_valid_q",
-                 "mesh_in_valid_i", "entry_pending_q")
+                 "mesh_in_valid_i", "entry_pending_q", "entry_starve_cnt_q")
 
     def __init__(self, tile, sim_time_ns, exit_seq_q, exit_valid_q,
-                 mesh_in_valid_i, entry_pending_q):
+                 mesh_in_valid_i, entry_pending_q, entry_starve_cnt_q):
         self.tile = tile
         self.sim_time_ns = sim_time_ns
         self.exit_seq_q = exit_seq_q
         self.exit_valid_q = exit_valid_q
         self.mesh_in_valid_i = mesh_in_valid_i
         self.entry_pending_q = entry_pending_q
+        # Phase 5 checkpoint A telemetry -- tile_ni.sv's own fairness
+        # counter, ground-truth read (not the CPU-visible view, which has
+        # no CSR mirror for this signal at all). Formally bounded by
+        # tile_ni_liveness.sby (<= FAIRNESS_LIMIT+1); this is observed-max
+        # telemetry, not an assertion -- see MacClusterHierMonitor's own
+        # max_starve_cnt tracking below.
+        self.entry_starve_cnt_q = entry_starve_cnt_q
 
     @property
     def ingress_mux_contention(self):
@@ -62,6 +69,7 @@ class MacClusterHierMonitor(uvm_monitor):
         self.toggle_count = {t: 0 for t in range(NUM_TILES)}
         self.last_toggle_time_ns = {t: 0.0 for t in range(NUM_TILES)}
         self._prev_exit_seq_q = {t: None for t in range(NUM_TILES)}
+        self.max_starve_cnt = {t: 0 for t in range(NUM_TILES)}
 
     async def run_phase(self):
         while True:
@@ -74,6 +82,9 @@ class MacClusterHierMonitor(uvm_monitor):
                     self.toggle_count[t] += 1
                     self.last_toggle_time_ns[t] = now_ns
                 self._prev_exit_seq_q[t] = exit_seq_q
+                starve_cnt = int(ni.entry_starve_cnt_q.value)
+                if starve_cnt > self.max_starve_cnt[t]:
+                    self.max_starve_cnt[t] = starve_cnt
                 self.ap.write(HierSample(
                     tile=t,
                     sim_time_ns=now_ns,
@@ -81,4 +92,5 @@ class MacClusterHierMonitor(uvm_monitor):
                     exit_valid_q=int(ni.exit_valid_q.value),
                     mesh_in_valid_i=int(ni.mesh_in_valid_i.value),
                     entry_pending_q=int(ni.entry_pending_q.value),
+                    entry_starve_cnt_q=starve_cnt,
                 ))

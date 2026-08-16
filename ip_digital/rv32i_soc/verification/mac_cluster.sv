@@ -92,16 +92,25 @@ module mac_cluster #(
     // real address-aliasing bug, both fixed).
     //
     // Unlike rv32i_addr_decoder.sv, no per-slave in-bounds gate is needed
-    // here: this decoder's own page size (256B, addr[7:0]) is chosen to
-    // exactly match every sub-slave's real ADDR_WIDTH=8 -- there is no
-    // "in-page but past the slave's real width" slack to alias into (the
-    // aliasing bug that fix pattern guards against). A first draft of this
-    // file copied that pattern verbatim anyway (`awaddr_i[7:TILE_ADDR_WIDTH]`
-    // with TILE_ADDR_WIDTH=8, i.e. `[7:8]`) -- a backwards, always-true-by-
+    // here. For the 4 tile pages, this decoder's own page size (256B,
+    // addr[7:0]) exactly matches each mac_tile_axi's real ADDR_WIDTH=8 --
+    // there is no "in-page but past the slave's real width" slack to alias
+    // into (the aliasing bug rv32i_addr_decoder.sv's own fix pattern
+    // guards against). A first draft of this file copied that pattern
+    // verbatim anyway (`awaddr_i[7:TILE_ADDR_WIDTH]` with
+    // TILE_ADDR_WIDTH=8, i.e. `[7:8]`) -- a backwards, always-true-by-
     // construction range Verilator's own SELRANGE warning caught
     // immediately. Removed rather than patched: the check was checking a
     // condition that can never be false given how this decoder's own page
     // size was chosen, not a real correctness gap.
+    // The CSR page is the one case where this DOESN'T hold exactly --
+    // NUM_REGS=32 gives it a real 128B footprint inside its 256B page, 128B
+    // of genuine slack (flagged by an adversarial review, verified rather
+    // than assumed away). No aliasing results: axi_lite_slave.sv's own
+    // internal `wr_idx/rd_idx < NUM_REGS` gate (see that file's B/R commit
+    // logic) already returns SLVERR for any in-page-but-out-of-range CSR
+    // address, independently of this file's own decode -- the safety net
+    // is real, just one level down, not absent.
     // -----------------------------------------------------------------
     localparam logic [2:0] SEL_T0 = 3'd0, SEL_T1 = 3'd1, SEL_T2 = 3'd2,
                             SEL_T3 = 3'd3, SEL_CSR = 3'd4, SEL_NONE = 3'd5;
@@ -426,6 +435,21 @@ module mac_cluster #(
             if (awaddr_page == 3'd3) assert(wsel_decode == 3'd3);
             if (awaddr_page == 3'd4) assert(wsel_decode == 3'd4);
             if (awaddr_page > 3'd4)  assert(wsel_decode == 3'd5);
+
+            // Read-side mirror of the write-side properties above -- found
+            // missing by an adversarial review after checkpoint 6's own
+            // formal sweep had already gone clean: the write-side literal
+            // mapping was proven, but rsel_decode's case statement (a
+            // hand-copy of wsel_decode's) had zero formal coverage of its
+            // own. A wrong RHS in any rsel_decode arm would have stayed
+            // silently unproven -- $onehot0 alone can't catch a single
+            // wrong-but-still-exclusive selection.
+            if (araddr_page == 3'd0) assert(rsel_decode == 3'd0);
+            if (araddr_page == 3'd1) assert(rsel_decode == 3'd1);
+            if (araddr_page == 3'd2) assert(rsel_decode == 3'd2);
+            if (araddr_page == 3'd3) assert(rsel_decode == 3'd3);
+            if (araddr_page == 3'd4) assert(rsel_decode == 3'd4);
+            if (araddr_page > 3'd4)  assert(rsel_decode == 3'd5);
 
             assert($onehot0({s_awvalid[0], s_awvalid[1], s_awvalid[2], s_awvalid[3], s_awvalid[4]}));
             assert($onehot0({s_arvalid[0], s_arvalid[1], s_arvalid[2], s_arvalid[3], s_arvalid[4]}));

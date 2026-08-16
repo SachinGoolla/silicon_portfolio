@@ -1,0 +1,29 @@
+[options]
+# Ingress-mux fairness bound (Phase 5 hardening): entry_starve_cnt_q never
+# exceeds FAIRNESS_LIMIT+1 (see tile_ni.sv's own comment on
+# entry_starve_cnt_q for why it's +1, not the raw parameter value --
+# verified by hand-trace + adversarial formal review against a real 4-cycle
+# BMC counterexample found against the tighter, unverified bound). Isolated
+# behind `ifdef LIVENESS` (mirroring rr_arbiter_liveness.sby's own split
+# from rr_arbiter.sby) so tile_ni.sby's existing mode-bmc run keeps its
+# current scope and depth unchanged -- this file proves the new bound
+# separately, attempting full k-induction (mode prove) rather than folding
+# an unproven new property into the existing checkpoint's risk surface.
+# depth 8, matching rr_arbiter_liveness.sby's own choice: entry_starve_cnt_q
+# is a saturating 3-bit counter but only ever reaches FAIRNESS_LIMIT+1 = 3
+# under the default parameter before resetting, comparable state-space
+# shape to rr_arbiter's own N_REQ+1 = 5-state counter -- adjust from the
+# actual run if this doesn't converge, don't assume it by analogy.
+mode prove
+depth 8
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -DLIVENESS tile_ni.sv requant.sv
+prep -top tile_ni
+
+[files]
+../rtl/tile_ni.sv
+../rtl/requant.sv

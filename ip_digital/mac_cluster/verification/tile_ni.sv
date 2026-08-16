@@ -19,12 +19,21 @@
 // s_axis/m_axis ports directly.
 //
 // Ingress mux (mesh delivery vs. CPU entry, both compete for the same
-// tile_s_axis port): mesh delivery takes priority whenever both are
-// simultaneously pending -- arbitrary but simple, and sufficient for this
-// phase's demo (no tile ever needs both sources at once). Egress mux
-// (mesh_egress_en_i): a tile's own m_axis results either forward into the
-// mesh (addressed via dest_x_i/dest_y_i) or get captured for CPU exit
-// readout -- never both.
+// tile_s_axis port): mesh delivery has priority by default -- but bounded,
+// not unconditional (Phase 5 hardening). Left fully unconditional, this
+// starves entry_pending_q indefinitely under sustained mesh_in_valid_i --
+// confirmed, not hypothetical, by Phase 4's own UVM log
+// (ingress_mux_contention=100%, entry pushes repeatedly timing out).
+// entry_starve_cnt_q (below) counts consecutive REAL mesh transfers that
+// occur while an entry push is pending and losing; once it reaches
+// FAIRNESS_LIMIT, the next re-decision forces entry to win. This is a
+// fairness bound, not a deadlock-safety fix -- the pre-existing,
+// already-accepted unbounded-hold gap from real tile backpressure
+// (tile_s_axis_tready_i alone can pin mesh_in_ready_o low indefinitely,
+// see mesh_router.sv's own header) is untouched by this change and stays
+// out of scope here. Egress mux (mesh_egress_en_i): a tile's own m_axis
+// results either forward into the mesh (addressed via dest_x_i/dest_y_i)
+// or get captured for CPU exit readout -- never both.
 //
 // Exit capture uses the SAME explicit-ack pattern mac_tile_axi.sv's own
 // CTRL.RESULT_ACK bit established (after a real one-shot deadlock bug was
@@ -52,6 +61,10 @@ module tile_ni #(
     parameter int ACT_W        = 8,
     parameter int PSUM_W       = 32,
     parameter int REQUANT_SHIFT = 4,
+    // Consecutive real mesh transfers entry_pending_q is allowed to lose
+    // before being forced to win. Effective enforced cap is
+    // FAIRNESS_LIMIT+1, not FAIRNESS_LIMIT -- see entry_starve_cnt_q below.
+    parameter int FAIRNESS_LIMIT = 2,
     parameter int MY_X         = 0,
     parameter int MY_Y         = 0
 ) (
@@ -142,11 +155,46 @@ module tile_ni #(
     // unconsumed, hold the decision regardless of what the OTHER source
     // does in the meantime.
     logic src_is_mesh_q;
+
+    // Fairness counter -- see the ingress-mux header comment above. Counts
+    // consecutive REAL mesh transfers (tvalid_o && tready_i), never a raw
+    // cycle count: a cycle counter would inflate during a downstream
+    // freeze (tile_s_axis_tvalid_o held high with tready_i low for many
+    // cycles) and make the bound unstatable. Saturating (never wraps past
+    // its max) so a future larger FAIRNESS_LIMIT can't silently defeat the
+    // assert below via wraparound.
+    //
+    // Verified by adversarial formal review, not just simulated: this
+    // block and src_is_mesh_q's own re-decision gate both sample pre-edge
+    // state, so the override actually enforced is "entry forced to win
+    // after FAIRNESS_LIMIT+1 consecutive mesh wins", not FAIRNESS_LIMIT --
+    // confirmed by hand-trace, matching a real 4-cycle BMC counterexample
+    // found against the tighter (FAIRNESS_LIMIT-only) bound. Don't "fix"
+    // this by shifting the comparison -- that variant is untested; the
+    // assert below states the bound that's actually been verified.
+    logic [2:0] entry_starve_cnt_q;
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            entry_starve_cnt_q <= 3'd0;
+        end else if (entry_pending_q && src_is_mesh_q &&
+                     tile_s_axis_tvalid_o && tile_s_axis_tready_i) begin
+            // mesh just won a real transfer while entry was pending
+            if (entry_starve_cnt_q != 3'd7) entry_starve_cnt_q <= entry_starve_cnt_q + 1'b1;
+        end else if (!entry_pending_q ||
+                     (!src_is_mesh_q && tile_s_axis_tvalid_o && tile_s_axis_tready_i)) begin
+            entry_starve_cnt_q <= 3'd0;  // entry cleared, or entry itself just won
+        end
+        // else: idle cycle or mid-freeze -- hold.
+    end
+
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             src_is_mesh_q <= 1'b0;
         end else if (!tile_s_axis_tvalid_o || (tile_s_axis_tvalid_o && tile_s_axis_tready_i)) begin
-            src_is_mesh_q <= mesh_in_valid_i;  // mesh priority when both are live
+            // mesh priority when both are live, UNLESS entry has already
+            // lost FAIRNESS_LIMIT consecutive times -- then force entry.
+            src_is_mesh_q <= mesh_in_valid_i &&
+                             !(entry_pending_q && entry_starve_cnt_q >= 3'(FAIRNESS_LIMIT));
         end
         // else: mid-transaction, unconsumed -- hold the current decision.
     end
@@ -265,6 +313,37 @@ module tile_ni #(
             else assert(tile_s_axis_tdata_o == entry_data_q);
         end
     end
+
+    // Ingress-mux fairness bound (Phase 5 hardening). Isolated behind its
+    // own `ifdef LIVENESS` (mirroring rr_arbiter.sv's own FORMAL/LIVENESS
+    // nesting) so tile_ni.sby's existing mode-bmc run's scope doesn't grow
+    // -- this new bound is proven separately by tile_ni_liveness.sby (mode
+    // prove attempted), not folded into the existing checkpoint's risk
+    // surface. Bound is FAIRNESS_LIMIT+1, not FAIRNESS_LIMIT -- see
+    // entry_starve_cnt_q's own comment for why; this is the verified bound,
+    // not the aspirational one.
+    `ifdef LIVENESS
+        always_comb begin
+            if (rst_n) assert(entry_starve_cnt_q <= 3'(FAIRNESS_LIMIT + 1));
+        end
+
+        // Auxiliary invariant, required for k-induction to close (plain
+        // induction on the bound alone failed against a spurious,
+        // unreachable predecessor state: cnt already at its cap while
+        // src_is_mesh_q is still 1). Derived by hand from the RTL's own
+        // construction, not imposed independently -- src_is_mesh_q's own
+        // update formula (`mesh_in_valid_i && !(entry_pending_q &&
+        // entry_starve_cnt_q >= FAIRNESS_LIMIT)`) is evaluated using the
+        // PRE-increment counter value, so the cycle the counter reaches its
+        // cap (FAIRNESS_LIMIT+1) is exactly the cycle src_is_mesh_q gets
+        // forced to 0 -- they change together, never with src_is_mesh_q
+        // lagging. Confirmed by hand-trace across the counter's full
+        // reachable range, not just the specific case that failed.
+        always_comb begin
+            if (rst_n && entry_starve_cnt_q >= 3'(FAIRNESS_LIMIT + 1))
+                assert(!(entry_pending_q && src_is_mesh_q));
+        end
+    `endif
 
     // Legitimate-upstream assumes: mesh_in_flit_i/valid_i is really driven
     // by mesh_2x2's own Local output port (proven VALID-sticky at
